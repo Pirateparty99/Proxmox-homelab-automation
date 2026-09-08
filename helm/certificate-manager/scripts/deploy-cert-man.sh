@@ -7,14 +7,16 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
+render_templates --quiet
+VALUES="$RENDER_DIR/helm/certificate-manager/cert-man-values.yaml"
+
 echo "Installing Cert Manager version $CERT_MANAGER_VERSION with Helm:"
 helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
   --namespace cert-manager \
   --create-namespace \
   --version "$CERT_MANAGER_VERSION" \
-  #--values "$SCRIPT_DIR/../cert-man-values.yaml" \
-  --values "$RENDER_DIR/helm/certificate-manager/cert-man-values.yaml" \ 
-  --set installCRDs=true
+  --set installCRDs=true \
+  --values "$VALUES" 
 
 echo "Installing ADCS Issuer version $ADCS_ISSUER_VERSION for Cert Manager:"
 ISSUER_VERSION="$ADCS_ISSUER_VERSION" "$SCRIPT_DIR/deploy-adcs-clusterissuer-helm.sh"

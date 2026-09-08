@@ -160,3 +160,18 @@ webhookService:
   type: ClusterIP                             # Type of Kubernetes service.
 
 nodeSelector: {}
+
+simulator:
+  # Turns off the simulator Deployment, Service, Secrets and its ClusterAdcsIssuer.
+  enabled: false
+
+  # This one is gated by its OWN key, not simulator.enabled - and the chart
+  # defaults it to TRUE. Left alone it renders a Certificate
+  # (adcs-sim-certificate) whose issuerRef points at
+  # ClusterAdcsIssuer/adcs-sim-adcsclusterissuer, which enabled:false never
+  # created. The Certificate then sits READY=False forever while cert-manager
+  # retries, minting a fresh temporary private-key Secret
+  # (adcs-sim-certificate-<random>) on every attempt.
+  exampleCertificate:
+    enabled: false
+

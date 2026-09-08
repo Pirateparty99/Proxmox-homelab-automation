@@ -89,29 +89,43 @@ The issuer talks to the **Certification Authority Web Enrollment** pages
 (`/certsrv`) over HTTPS. That role service, not the CA on its own and not CES,
 is what it depends on — without it the issuer never goes ready.
 
-Render first (`./bootstrap.py`), then copy each rendered `.ps1` to the Windows
-host named and run it elevated:
-
-| # | On | Script | Does |
-| --- | --- | --- | --- |
-| 1 | CA host | `Install-AdcsCertificationAuthority.ps1` | AD CS role + Enterprise CA |
-| 2 | a DC | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
-| 3 | CA host | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
-
-Step 2 needs Domain Admins; 1 and 3 need Enterprise Admins. Reboot the web host
-between 2 and 3 so it picks up its new group membership, or
-`Test-ADServiceAccount` fails in step 3.
-
-Step 1 snapshots its own VM through the Proxmox API before it changes anything.
-Create a token and grant it `VM.Snapshot` on the DC:
+First create the Proxmox API token the CA step uses to snapshot the DC:
 
 ```bash
-pveum user token add root@pam automation --privsep 0
+proxmox/setup/scripts/create-pve-api-token.sh --dry-run   # then without --dry-run
 ```
 
-Put the token *id* in `PVE_API_TOKEN_ID`; the secret is never stored in the repo
-— export `PVE_API_TOKEN` on the Windows host or let the script prompt. Add
-`-WhatIf` to see what it would snapshot, or `-SnapshotFirst:$false` to skip.
+That makes a `PVESnapshotOnly` role (`VM.Audit`, `VM.Snapshot` — deliberately
+*not* `VM.Snapshot.Rollback`) and grants it on the DC's VM alone, so the
+credential sitting on a Windows host cannot do anything else. Proxmox prints the
+secret once; it is never stored in the repo.
+
+Then render (`./bootstrap.py`) and copy the whole `rendered/ad/scripts` folder to
+the CA host. One elevated run does the lot:
+
+```powershell
+$env:PVE_API_TOKEN = '<secret>'      # or let it prompt
+.\Install-AdcsChain.ps1 -WhatIf     # then without -WhatIf
+```
+
+It calls the three scripts in order, and installs the gMSA on the host in
+between:
+
+| # | Script | Does |
+| --- | --- | --- |
+| 1 | `Install-AdcsCertificationAuthority.ps1` | snapshot, AD CS role, Enterprise CA |
+| 2 | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
+| 3 | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
+
+Every step is idempotent, so re-running after a failure is safe; `-From <step>`
+resumes. Run as Enterprise Admins — step 2 alone would only need Domain Admins.
+
+This works as one run because the CA host here is also a domain controller. Split
+those roles across machines and the three scripts have to be run separately, on
+the right host each time; `Install-AdcsChain.ps1` checks and refuses rather than
+guessing. Step 2 normally needs a reboot before step 3 so the host sees its new
+group membership — the chain purges the computer's Kerberos tickets instead, and
+only asks for a reboot if that was not enough.
 
 Taking a snapshot of a running DC is safe. **Rolling one back is not**, and no
 script here does it — see the `.NOTES` in `Install-AdcsCertificationAuthority.ps1`

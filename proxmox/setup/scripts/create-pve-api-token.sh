@@ -49,6 +49,17 @@ log()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 pve_cmd() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE_SSH" "$@"; }
+# has_row <remote command emitting a JSON array> <python predicate over row `r`>
+has_row() {
+  pve_cmd "$1" 2>/dev/null | python3 -c "
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any($2 for r in rows) else 1)
+"
+}
 run() { if (( DRY_RUN )); then printf '    [dry-run] %s\n' "$*"; else pve_cmd "$*"; fi; }
 
 # PVE_API_TOKEN_ID is "<user>@<realm>!<tokenname>" - pveum wants the two halves
@@ -61,7 +72,8 @@ TOKEN_NAME="${PVE_API_TOKEN_ID##*!}"
 # ------------------------------------------------------------------- preflight
 log "Preflight"
 command -v ssh >/dev/null || die "ssh not found in PATH"
-pve_cmd "pveum --version" >/dev/null 2>&1 || die "cannot run 'pveum' via ssh on $PVE_SSH"
+pve_cmd "pveum role list --output-format json" >/dev/null 2>&1 \
+  || die "cannot run 'pveum' via ssh on $PVE_SSH"
 info "proxmox:   $PVE_SSH"
 info "token:     $PVE_API_TOKEN_ID"
 info "vm:        $PVE_DC_VMID ($PVE_NODE)"
@@ -72,7 +84,7 @@ info "vm name:   $(pve_cmd "qm config $PVE_DC_VMID" | sed -n 's/^name: //p')"
 
 # ------------------------------------------------------------------------ role
 log "Role '$PVE_TOKEN_ROLE'"
-if pve_cmd "pveum role list --output-format json" | grep -q "\"roleid\":\"$PVE_TOKEN_ROLE\""; then
+if has_row "pveum role list --output-format json" "r.get('roleid') == '$PVE_TOKEN_ROLE'"; then
   info "already exists - leaving as is"
 else
   run "pveum role add $PVE_TOKEN_ROLE --privs 'VM.Audit VM.Snapshot'"
@@ -82,8 +94,8 @@ fi
 # ----------------------------------------------------------------------- token
 log "Token '$PVE_API_TOKEN_ID'"
 TOKEN_EXISTS=0
-if pve_cmd "pveum user token list '$TOKEN_USER' --output-format json" \
-     | grep -q "\"tokenid\":\"$TOKEN_NAME\""; then
+if has_row "pveum user token list '$TOKEN_USER' --output-format json" \
+           "r.get('tokenid') == '$TOKEN_NAME'"; then
   TOKEN_EXISTS=1
 fi
 
@@ -108,14 +120,14 @@ if (( ! TOKEN_EXISTS )); then
     # --privsep 1 (the default) means the token carries only the privileges
     # granted to it below, NOT everything $TOKEN_USER can do. With --privsep 0
     # this token would be a full root credential sitting on a Windows host.
-    pve_cmd "pveum user token add '$TOKEN_USER' '$TOKEN_NAME' --privsep 1"
+    pve_cmd "pveum user token add '$TOKEN_USER' '$TOKEN_NAME' --privsep 1 --comment 'AD CS scripts: snapshot VM $PVE_DC_VMID'"
   fi
 fi
 
 # ------------------------------------------------------------------------- acl
 log "Permissions on /vms/$PVE_DC_VMID"
-if pve_cmd "pveum acl list --output-format json" \
-     | grep -q "\"path\":\"/vms/$PVE_DC_VMID\".*\"ugid\":\"$PVE_API_TOKEN_ID\""; then
+if has_row "pveum acl list --output-format json" \
+           "r.get('path') == '/vms/$PVE_DC_VMID' and r.get('ugid') == '$PVE_API_TOKEN_ID'"; then
   info "already granted"
 else
   run "pveum acl modify /vms/$PVE_DC_VMID --tokens '$PVE_API_TOKEN_ID' --roles $PVE_TOKEN_ROLE"

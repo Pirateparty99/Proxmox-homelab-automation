@@ -11,3 +11,6 @@ config.env
 *.pem
 
 *.bak
+
+__pycache__/
+*.pyc

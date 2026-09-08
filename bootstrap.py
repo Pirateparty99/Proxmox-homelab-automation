@@ -9,8 +9,8 @@ to the shell scripts.
 
 This is the single place where derived values are computed. lib/config.sh evals
 --export rather than deriving anything itself, so bash and the templates can
-never drift apart. (ad/lib/Get-RepoConfig.ps1 mirrors these rules for Windows,
-where Python is usually not available - keep it in step.)
+never drift apart. PowerShell scripts are rendered with their values baked into
+param() defaults, so Windows hosts need neither Python nor config.env.
 
 Requires Jinja2:  dnf install python3-jinja2   |   pip install jinja2
 Targets Python 3.6+ so it runs on the older interpreters in LXC containers.
@@ -96,6 +96,12 @@ def derive(cfg):
         with open(ca, "rb") as fh:
             cfg["ADCS_CA_BUNDLE_B64"] = base64.b64encode(fh.read()).decode("ascii")
 
+    # Scripts run from a workstation, so the kubeconfig lives wherever the user
+    # keeps it. Expand ~ here: --export shell-quotes values, so a literal tilde
+    # would survive the eval unexpanded and silently point oc at nothing.
+    if cfg.get("KUBECONFIG"):
+        cfg["KUBECONFIG"] = os.path.expanduser(cfg["KUBECONFIG"])
+
     cfg["REPO_ROOT"] = REPO_ROOT
     return cfg
 
@@ -118,6 +124,13 @@ def _required(value, name="value"):
     return value
 
 
+def _psquote(value):
+    """Render a value as a PowerShell single-quoted string, doubling any embedded
+    quote. Lets bootstrap.py bake config into .ps1 files safely, so Windows hosts
+    need neither Python nor a copy of config.env."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def render(cfg, out_dir, dry_run=False):
     env = Environment(
         loader=FileSystemLoader(REPO_ROOT),
@@ -125,6 +138,7 @@ def render(cfg, out_dir, dry_run=False):
         keep_trailing_newline=True,
     )
     env.filters["required"] = _required
+    env.filters["psquote"] = _psquote
     results = []
     for rel in find_templates():
         dest = os.path.join(out_dir, rel[:-len(".tmpl")])
@@ -160,8 +174,11 @@ def main():
         return
 
     if args.export:
+        # Skip empties: exporting KUBECONFIG="" would point oc at nothing, which
+        # is worse than leaving it unset and letting the default apply.
         for key in sorted(cfg):
-            print("export %s=%s" % (key, shlex.quote(cfg[key])))
+            if cfg[key] != "":
+                print("export %s=%s" % (key, shlex.quote(cfg[key])))
         return
 
     try:

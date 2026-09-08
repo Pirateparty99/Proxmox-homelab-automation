@@ -1,9 +1,9 @@
 # PSScriptAnalyzer settings for the PowerShell in ad/scripts.
 #
-#   pwsh -c "Invoke-ScriptAnalyzer -Path rendered/ad/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1"
+#   pwsh -c "Invoke-ScriptAnalyzer -Path scripts/ad -Recurse -Settings PSScriptAnalyzerSettings.psd1"
 #
-# Analyse the RENDERED .ps1 files, not the .tmpl sources - a template is not
-# valid PowerShell until bootstrap.py has substituted the config values.
+# These are real .ps1 files, so they lint where they sit - site values come from
+# adcs.env at run time rather than being substituted in at render time.
 @{
     ExcludeRules = @(
         # These scripts are operator-facing: a human runs one by hand and reads

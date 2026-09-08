@@ -96,12 +96,14 @@ Follow these and new scripts need no changes here.
 - **A file needing site values is a `*.tmpl`.** `bootstrap.py` renders it into
   `rendered/`, dropping the leading `templates/` or `scripts/` — so
   `templates/helm/x.yaml.tmpl` becomes `rendered/helm/x.yaml`, and
-  `scripts/ad/y.ps1.tmpl` becomes `rendered/ad/y.ps1`. A script that needs
-  rendering therefore sits with the other scripts; only non-script config
-  (chart values, manifests) lives in `templates/`.
+  `templates/ad/adcs.env.tmpl` becomes `rendered/ad/adcs.env`. A script that
+  needs rendering would sit with the other scripts; today only config is
+  templated, so `templates/` holds all of it.
 - **Bash scripts** `source lib/config.sh` and read the variables.
-- **PowerShell scripts** are templated whole — values are baked into `param()`
-  defaults via the `psquote` filter, so the Windows host needs no config file.
+- **PowerShell scripts** are ordinary `.ps1`, not templates. They read
+  `adcs.env` through `scripts/ad/Get-AdcsConfig.ps1`; only that env file is
+  generated. Any parameter passed on the command line wins over the file, and an
+  environment variable of the same name wins over both.
 - **`config.env`, `secrets/` and `rendered/` are gitignored.** Anything
   site-specific belongs in one of them.
 
@@ -126,8 +128,15 @@ That makes a `PVESnapshotOnly` role (`VM.Audit`, `VM.Snapshot` — deliberately
 credential sitting on a Windows host cannot do anything else. Proxmox prints the
 secret once; it is never stored in the repo.
 
-Then render (`./bootstrap.py`) and copy the whole `rendered/ad` folder to
-the CA host. One elevated run does the lot:
+Then render (`./bootstrap.py`) and copy both of these to the same folder on the
+CA host — the scripts read the env file from their own directory:
+
+```
+scripts/ad/*.ps1          the scripts themselves
+rendered/ad/adcs.env      your site values
+```
+
+One elevated run does the lot:
 
 ```powershell
 $env:PVE_API_TOKEN = '<secret>'      # or let it prompt

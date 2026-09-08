@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------- configuration
-. "$(dirname "${BASH_SOURCE[0]}")/../../../lib/config.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../../lib/config.sh"
 
 PVE_SSH="${PVE_SSH:?set PVE_API_HOST in config.env}"
 PVE_DC_VMID="${PVE_DC_VMID:?set PVE_DC_VMID in config.env}"

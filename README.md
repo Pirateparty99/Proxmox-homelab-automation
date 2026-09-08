@@ -7,6 +7,26 @@ Ceph CSI storage, cert-manager with an AD CS issuer.
 Nothing site-specific is committed. Hostnames, domains, IPs and credentials live
 in `config.env`, which is gitignored.
 
+## Layout
+
+```
+config.env          site values (gitignored)
+bootstrap.py        renders templates/ -> rendered/, and exports the same values to bash
+lib/config.sh       what bash scripts source to get those values
+
+templates/          every *.tmpl, arranged as the rendered output should be
+  ad/                 PowerShell for the domain controllers / CA
+  helm/<chart>/       values files and manifests
+
+scripts/            everything runnable, grouped by what it targets
+  okd/                against the OKD cluster
+  helm/<chart>/       helm installs and the objects around them
+  proxmox/            against the Proxmox API / nodes
+
+rendered/           bootstrap.py output (gitignored)
+secrets/            certificates pulled from the domain (gitignored)
+```
+
 ## Setup
 
 ```bash
@@ -31,8 +51,8 @@ openssl x509 -inform der -in ca.cer -out secrets/ad-ca.crt
 Then run any script directly; they read the config themselves.
 
 ```bash
-okd/scripts/setup-okd-ldap-auth.sh
-helm/certificate-manager/scripts/deploy-cert-man.sh
+scripts/okd/setup-okd-ldap-auth.sh
+scripts/helm/certificate-manager/deploy-cert-man.sh
 ```
 
 Scripts run from your workstation and need `oc`, `helm` and a working
@@ -71,8 +91,11 @@ environment variable set at run time wins over the file.
 Follow these and new scripts need no changes here.
 
 - **Never hardcode a site value.** Add it to `config.env.example` and `config.env`.
-- **A file needing site values is a `*.tmpl`.** `bootstrap.py` finds every one in
-  the repo and renders it into `rendered/`, mirroring the source path.
+- **A file needing site values is a `*.tmpl`, and lives under `templates/`.**
+  `bootstrap.py` renders it into `rendered/`, mirroring the path *below*
+  `templates/` — so `templates/helm/x.yaml.tmpl` becomes `rendered/helm/x.yaml`.
+- **Everything runnable lives under `scripts/`,** grouped by what it targets:
+  `scripts/okd`, `scripts/helm/<chart>`, `scripts/proxmox`.
 - **Bash scripts** `source lib/config.sh` and read the variables.
 - **PowerShell scripts** are templated whole — values are baked into `param()`
   defaults via the `psquote` filter, so the Windows host needs no config file.
@@ -92,7 +115,7 @@ is what it depends on — without it the issuer never goes ready.
 First create the Proxmox API token the CA step uses to snapshot the DC:
 
 ```bash
-proxmox/setup/scripts/create-pve-api-token.sh --dry-run   # then without --dry-run
+scripts/proxmox/create-pve-api-token.sh --dry-run   # then without --dry-run
 ```
 
 That makes a `PVESnapshotOnly` role (`VM.Audit`, `VM.Snapshot` — deliberately
@@ -100,7 +123,7 @@ That makes a `PVESnapshotOnly` role (`VM.Audit`, `VM.Snapshot` — deliberately
 credential sitting on a Windows host cannot do anything else. Proxmox prints the
 secret once; it is never stored in the repo.
 
-Then render (`./bootstrap.py`) and copy the whole `rendered/ad/scripts` folder to
+Then render (`./bootstrap.py`) and copy the whole `rendered/ad` folder to
 the CA host. One elevated run does the lot:
 
 ```powershell
@@ -134,8 +157,8 @@ for the USN-rollback and VM-GenerationID detail before you ever restore one.
 Then, from the workstation:
 
 ```bash
-helm/certificate-manager/scripts/deploy-cert-man.sh          # cert-manager + adcs-issuer
-helm/certificate-manager/scripts/deploy-adcs-clusterissuer.sh  # secret + ClusterAdcsIssuer
+scripts/helm/certificate-manager/deploy-cert-man.sh          # cert-manager + adcs-issuer
+scripts/helm/certificate-manager/configure-clusterissuer.sh  # secret + ClusterAdcsIssuer
 ```
 
 The second checks `ADCS_URL` is reachable and that its certificate validates

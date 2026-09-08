@@ -30,6 +30,8 @@ except ImportError:
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 SKIP_DIRS = {".git", "rendered", "secrets"}
+# Templates live here; the path below it mirrors the rendered output.
+TEMPLATE_DIR = "templates"
 
 
 def load_config(path):
@@ -119,6 +121,21 @@ def find_templates():
     return sorted(found)
 
 
+def _output_path(rel):
+    """Where a template renders to, relative to the render dir.
+
+    Templates live under templates/, but the tree below it is the tree the
+    scripts expect: templates/helm/x.yaml.tmpl renders to rendered/helm/x.yaml,
+    not rendered/templates/helm/x.yaml. Anything found outside templates/ keeps
+    its own path, so a one-off .tmpl elsewhere still works.
+    """
+    out = rel[:-len(".tmpl")]
+    prefix = TEMPLATE_DIR + os.sep
+    if out.startswith(prefix):
+        out = out[len(prefix):]
+    return out
+
+
 def _required(value, name="value"):
     """StrictUndefined catches names that do not exist; this catches ones that
     exist but are empty, which is the more common config.env mistake."""
@@ -144,7 +161,7 @@ def render(cfg, out_dir, dry_run=False):
     env.filters["psquote"] = _psquote
     results = []
     for rel in find_templates():
-        dest = os.path.join(out_dir, rel[:-len(".tmpl")])
+        dest = os.path.join(out_dir, _output_path(rel))
         results.append((rel, dest))
         if dry_run:
             continue

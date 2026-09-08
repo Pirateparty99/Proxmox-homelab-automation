@@ -2,7 +2,8 @@
 """Render every *.tmpl in this repo from config.env, and expose the same values
 to the shell scripts.
 
-    ./bootstrap.py                 render all templates into rendered/
+    ./bootstrap.py                 render all templates into rendered/, and
+                                   stage the static scripts that go with them
     ./bootstrap.py --list          show what would be rendered
     ./bootstrap.py --export        emit `export K=V` lines for a shell to eval
     ./bootstrap.py --json          emit the resolved config as JSON
@@ -18,9 +19,11 @@ Targets Python 3.6+ so it runs on the older interpreters in LXC containers.
 
 import argparse
 import base64
+import glob
 import json
 import os
 import shlex
+import shutil
 import sys
 
 try:
@@ -37,6 +40,12 @@ SKIP_DIRS = {".git", "rendered", "secrets"}
 # Scripts that happen to need rendering therefore sit with the other scripts,
 # not in a separate tree, while their output stays where the docs say it is.
 RENDER_ROOTS = ("templates", "scripts")
+
+# Static files copied verbatim into the render tree, as (glob, destination).
+# A rendered directory should be self-contained: rendered/ad holds the AD CS
+# scripts next to the adcs.env they read, so it can be handed to the CA host as
+# one folder rather than assembled by hand from two places.
+STAGED_FILES = [("scripts/ad/*.ps1", "ad")]
 
 
 def load_config(path):
@@ -177,6 +186,20 @@ def render(cfg, out_dir, dry_run=False):
     return results
 
 
+def stage(out_dir, dry_run=False):
+    """Copy STAGED_FILES into the render tree. Returns (src, dest) pairs."""
+    results = []
+    for pattern, dest_dir in STAGED_FILES:
+        for src in sorted(glob.glob(os.path.join(REPO_ROOT, pattern))):
+            dest = os.path.join(out_dir, dest_dir, os.path.basename(src))
+            results.append((os.path.relpath(src, REPO_ROOT), dest))
+            if dry_run:
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(src, dest)
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -208,6 +231,7 @@ def main():
 
     try:
         results = render(cfg, args.out, dry_run=args.list)
+        staged = stage(args.out, dry_run=args.list)
     except Exception as exc:                      # noqa: BLE001 - message is the point
         sys.exit("render failed: %s: %s" % (type(exc).__name__, exc))
 
@@ -217,6 +241,9 @@ def main():
             print("  %s %s -> %s" % (verb, src, os.path.relpath(dest, REPO_ROOT)))
         if not results:
             print("  no *.tmpl files found")
+        verb = "would stage" if args.list else "staged"
+        for src, dest in staged:
+            print("  %s %s -> %s" % (verb, src, os.path.relpath(dest, REPO_ROOT)))
 
 
 if __name__ == "__main__":

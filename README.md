@@ -24,6 +24,7 @@ scripts/            everything runnable, grouped by what it targets
   proxmox/            against the Proxmox API / nodes
 
 rendered/           bootstrap.py output (gitignored)
+  ad/                 the self-contained bundle to copy to the CA host
 secrets/            certificates pulled from the domain (gitignored)
 ```
 
@@ -93,6 +94,9 @@ Follow these and new scripts need no changes here.
 - **Never hardcode a site value.** Add it to `config.env.example` and `config.env`.
 - **Everything runnable lives under `scripts/`,** grouped by what it targets:
   `scripts/ad`, `scripts/okd`, `scripts/helm/<chart>`, `scripts/proxmox`.
+- **Static files a rendered directory needs** are listed in `STAGED_FILES` in
+  `bootstrap.py`, which copies them in — so a rendered directory is something
+  you can hand to another machine whole.
 - **A file needing site values is a `*.tmpl`.** `bootstrap.py` renders it into
   `rendered/`, dropping the leading `templates/` or `scripts/` — so
   `templates/helm/x.yaml.tmpl` becomes `rendered/helm/x.yaml`, and
@@ -128,15 +132,17 @@ That makes a `PVESnapshotOnly` role (`VM.Audit`, `VM.Snapshot` — deliberately
 credential sitting on a Windows host cannot do anything else. Proxmox prints the
 secret once; it is never stored in the repo.
 
-Then render (`./bootstrap.py`) and copy both of these to the same folder on the
-CA host — the scripts read the env file from their own directory:
+Then get the bundle onto the CA host. `./bootstrap.py` renders `adcs.env` and
+stages the `.ps1` beside it, so `rendered/ad` is self-contained — one directory
+holding everything that host needs:
 
-```
-scripts/ad/*.ps1          the scripts themselves
-rendered/ad/adcs.env      your site values
+```bash
+scripts/ad/copy-to-ca-host.sh            # render, then scp to $ADCS_HOST
+scripts/ad/copy-to-ca-host.sh --zip      # or write rendered/ad.zip to move by hand
 ```
 
-One elevated run does the lot:
+It checks both halves of the bundle are present before copying, so a half-staged
+directory fails here rather than on the CA host. One elevated run does the lot:
 
 ```powershell
 $env:PVE_API_TOKEN = '<secret>'      # or let it prompt

@@ -1,0 +1,42 @@
+# DUPLICATE: this renders the same ClusterAdcsIssuer as
+# helm/certificate-manager/adcs-clusterissuer.yaml.tmpl. Both produce a resource
+# named {{ ADCS_ISSUER_NAME }}, so keep one and delete the other.
+# ClusterAdcsIssuer for the AD CS certificate authority.
+#
+# The Kasm chart references this via values.yaml:
+#   certificate.certManager.issuerName:  {{ ADCS_ISSUER_NAME }}
+#   certificate.certManager.issuerKind:  ClusterAdcsIssuer
+#   certificate.certManager.issuerGroup: adcs.certmanager.csf.nokia.com
+#
+# NOTE: because this is a *Cluster*AdcsIssuer, the adcs-issuer controller looks up
+# credentialsRef in its cluster-resource-namespace, which is set to "{{ ADCS_NAMESPACE }}"
+# on this cluster (see: helm get values adcs-issuer -n {{ ADCS_NAMESPACE }}).
+#
+# Create the credentials secret yourself -- do not commit credentials to this file:
+#
+#   kubectl create secret generic {{ ADCS_CREDENTIALS_SECRET }} \
+#     -n {{ ADCS_NAMESPACE }} \
+#     --from-literal=username='{{ ADCS_ENROLL_USER }}@{{ AD_REALM }}' \
+#     --from-literal=password='<prompted>'
+#
+apiVersion: adcs.certmanager.csf.nokia.com/v1
+kind: ClusterAdcsIssuer
+metadata:
+  name: {{ ADCS_ISSUER_NAME }}
+spec:
+  # ADCS web-enrollment endpoint, e.g. https://ca01.example.internal/certsrv
+  url: "{{ ADCS_URL }}"
+
+  # AD CS certificate template that permits server-auth EKU for this hostname.
+  templateName: "{{ ADCS_TEMPLATE }}"
+
+  credentialsRef:
+    name: {{ ADCS_CREDENTIALS_SECRET }}
+
+  # PEM bundle for the issuing CA, so the controller can verify the ADCS TLS endpoint.
+  # Omit only if the endpoint's chain is already trusted by the controller image.
+  caBundle: |
+    <base64-or-PEM CA chain>
+
+  retryInterval: 1h
+  statusCheckInterval: 6h

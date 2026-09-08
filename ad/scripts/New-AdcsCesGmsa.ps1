@@ -1,0 +1,121 @@
+<#
+.SYNOPSIS
+    Creates a group Managed Service Account (gMSA) to run the AD CS Certificate
+    Enrollment Web Service (CES).
+
+.DESCRIPTION
+    Run on a domain controller, or any domain member with RSAT-AD-PowerShell,
+    as a member of Domain Admins.
+
+    This creates and configures the account in AD only. Installing it on the CES
+    host and binding it to the CES application pool happen on that host; the
+    commands are printed at the end.
+
+    Safe to re-run - an existing account is updated rather than duplicated.
+
+.NOTES
+    CES is not the same thing as the certsrv web enrollment pages. The
+    cert-manager adcs-issuer talks to /certsrv (role service
+    ADCS-Web-Enrollment), so installing CES alone will not make it work.
+#>
+
+[CmdletBinding()]
+param(
+    [string]$Name,
+    [string]$CesHost,
+    [string]$CaHost,
+    [string]$GroupName,
+    [string]$GroupPath,
+    [string]$ConfigFile
+)
+
+$ErrorActionPreference = 'Stop'
+Import-Module ActiveDirectory
+
+# Defaults come from config.env, the same file the shell scripts read. Anything
+# passed as a parameter wins.
+. "$PSScriptRoot\..\lib\Get-RepoConfig.ps1"
+$cfg = Get-RepoConfig -Path $ConfigFile
+
+if (-not $Name)      { $Name      = $cfg.CES_GMSA_NAME }
+if (-not $CesHost)   { $CesHost   = $cfg.CES_HOST }
+if (-not $CaHost)    { $CaHost    = $cfg.ADCS_HOST }
+if (-not $GroupName) { $GroupName = $cfg.CES_GROUP_NAME }
+if (-not $GroupPath) { $GroupPath = $cfg.AD_GROUP_BASE_DN }
+
+# gMSA passwords are derived from a KDS root key. Without one present in the
+# forest, New-ADServiceAccount fails. A newly added key is normally only usable
+# after 10 hours (it waits for AD replication); backdating the effective time is
+# the standard workaround on a small or single-DC domain.
+if (-not (Get-KdsRootKey)) {
+    Write-Host "No KDS root key in the forest - adding one (backdated so it is usable immediately)."
+    Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
+}
+
+# Only computers in this group may retrieve the gMSA password. Using a group
+# rather than naming the host directly means adding a second CES server later
+# requires no change to the account itself.
+$group = Get-ADGroup -Filter "Name -eq '$GroupName'" -ErrorAction SilentlyContinue
+if (-not $group) {
+    $group = New-ADGroup -Name $GroupName -GroupScope Global -GroupCategory Security -Path $GroupPath -PassThru
+    Write-Host "Created group $GroupName."
+}
+
+$cesShort    = $CesHost.Split('.')[0]
+$cesComputer = Get-ADComputer -Identity $cesShort
+$members     = @(Get-ADGroupMember -Identity $group | Select-Object -ExpandProperty distinguishedName)
+if ($members -notcontains $cesComputer.DistinguishedName) {
+    Add-ADGroupMember -Identity $group -Members $cesComputer
+    Write-Host "Added $cesShort to $GroupName."
+}
+
+# CES is reached over HTTP(S), so it needs HTTP SPNs on both the FQDN and the
+# short name for Kerberos authentication to succeed either way the client asks.
+$spns = @("HTTP/$CesHost", "HTTP/$cesShort")
+
+# CES impersonates the requesting user when it submits to the CA, so it needs
+# constrained delegation to the CA's RPC interface. Without this, authentication
+# to IIS succeeds but the request fails once it leaves the web service.
+$delegateTo = @("rpcss/$CaHost", "HOST/$CaHost")
+
+if (Get-ADServiceAccount -Filter "Name -eq '$Name'" -ErrorAction SilentlyContinue) {
+    Write-Host "gMSA $Name exists - updating."
+    Set-ADServiceAccount -Identity $Name `
+        -PrincipalsAllowedToRetrieveManagedPassword $group `
+        -ServicePrincipalNames @{ Replace = $spns } `
+        -KerberosEncryptionType AES128, AES256 `
+        -Replace @{ 'msDS-AllowedToDelegateTo' = $delegateTo }
+} else {
+    New-ADServiceAccount -Name $Name `
+        -DNSHostName $CesHost `
+        -Description 'Runs the AD CS Certificate Enrollment Web Service' `
+        -PrincipalsAllowedToRetrieveManagedPassword $group `
+        -ServicePrincipalNames $spns `
+        -KerberosEncryptionType AES128, AES256
+    Set-ADServiceAccount -Identity $Name -Replace @{ 'msDS-AllowedToDelegateTo' = $delegateTo }
+    Write-Host "Created gMSA $Name."
+}
+
+Get-ADServiceAccount -Identity $Name -Properties PrincipalsAllowedToRetrieveManagedPassword,
+    ServicePrincipalNames, msDS-AllowedToDelegateTo, KerberosEncryptionType |
+    Format-List Name, DNSHostName, Enabled, ServicePrincipalNames,
+                PrincipalsAllowedToRetrieveManagedPassword, msDS-AllowedToDelegateTo
+
+$netbios = (Get-ADDomain).NetBIOSName
+$account = $netbios + '\' + $Name + '$'
+
+Write-Host ""
+Write-Host "Next, on $CesHost (as an administrator):"
+Write-Host ""
+Write-Host "  # the host must refresh its Kerberos ticket to see the new group membership"
+Write-Host "  Restart-Computer"
+Write-Host ""
+Write-Host "  Install-WindowsFeature ADCS-Enroll-Web-Svc -IncludeManagementTools"
+Write-Host "  Install-ADServiceAccount -Identity $Name"
+Write-Host "  Test-ADServiceAccount    -Identity $Name     # must return True before continuing"
+Write-Host ""
+$caConfig = $CaHost.Split('.')[0] + '\' + $cfg.ADCS_CA_NAME
+Write-Host "  Install-AdcsEnrollmentWebService -CAConfig '$caConfig' -AuthenticationType Kerberos -ServiceAccountName '$account' -SSLCertThumbprint '<thumbprint>'"
+Write-Host ""
+Write-Host "If that cmdlet rejects the gMSA, install CES with a normal account and then"
+Write-Host "set the CES application pool identity to $account in IIS Manager."

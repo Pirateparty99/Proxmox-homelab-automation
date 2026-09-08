@@ -1,3 +1,13 @@
+# Local site configuration - copy config.env.example and edit. Never committed.
+config.env
+
+# Templates render here at deploy time; everything in it is site-specific.
+/rendered/
+
+# Certificates, keys and anything else pulled from the domain.
+/secrets/
 *.crt
 *.key
 *.pem
+
+*.bak

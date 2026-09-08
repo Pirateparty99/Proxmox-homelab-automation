@@ -1,0 +1,33 @@
+---
+# Rendered by scripts/deploy-adcs-clusterissuer.sh into rendered/ - do not apply
+# this file directly, and do not put site values in it.
+apiVersion: adcs.certmanager.csf.nokia.com/v1
+kind: ClusterAdcsIssuer
+metadata:
+  name: {{ ADCS_ISSUER_NAME }}
+spec:
+  # The controller appends the page names itself - fmt.Sprintf("%s/%s", url,
+  # "certfnsh.asp") - so this is the certsrv base URL with no trailing slash.
+  # Requires the ADCS-Web-Enrollment role service on the CA, over HTTPS: certsrv
+  # authenticates every request, so on plain HTTP the Kerberos exchange and the
+  # CSR both cross the network unprotected.
+  url: {{ ADCS_URL }}
+
+  # Must permit the server-auth EKU. Confirm with `certutil -CATemplates` on the CA.
+  templateName: {{ ADCS_TEMPLATE }}
+
+  # Base64 of the AD root CA in PEM form, injected from AD_CA_CERT_FILE at render
+  # time so the certificate itself is never committed. The CRD types this field
+  # as "format: byte", so the API server base64-decodes it before the controller
+  # sees it. This verifies TLS to certsrv, so it must be the CA that signs the
+  # IIS certificate on the CA host.
+  caBundle: {{ ADCS_CA_BUNDLE_B64 | required("ADCS_CA_BUNDLE_B64 - is AD_CA_CERT_FILE present?") }}
+
+  # Cluster-scoped, so the controller reads this Secret from its
+  # cluster-resource-namespace ({{ ADCS_NAMESPACE }}), NOT from the namespace of the
+  # Certificate that references the issuer.
+  credentialsRef:
+    name: {{ ADCS_CREDENTIALS_SECRET }}
+
+  statusCheckInterval: 6m
+  retryInterval: 1h

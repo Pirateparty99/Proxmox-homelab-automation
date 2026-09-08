@@ -30,8 +30,13 @@ except ImportError:
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 SKIP_DIRS = {".git", "rendered", "secrets"}
-# Templates live here; the path below it mirrors the rendered output.
-TEMPLATE_DIR = "templates"
+# A *.tmpl under one of these renders to the tree BELOW it, so both top-level
+# groupings collapse to the same output shape:
+#     templates/helm/x.yaml.tmpl -> rendered/helm/x.yaml
+#     scripts/ad/y.ps1.tmpl      -> rendered/ad/y.ps1
+# Scripts that happen to need rendering therefore sit with the other scripts,
+# not in a separate tree, while their output stays where the docs say it is.
+RENDER_ROOTS = ("templates", "scripts")
 
 
 def load_config(path):
@@ -124,15 +129,15 @@ def find_templates():
 def _output_path(rel):
     """Where a template renders to, relative to the render dir.
 
-    Templates live under templates/, but the tree below it is the tree the
-    scripts expect: templates/helm/x.yaml.tmpl renders to rendered/helm/x.yaml,
-    not rendered/templates/helm/x.yaml. Anything found outside templates/ keeps
-    its own path, so a one-off .tmpl elsewhere still works.
+    The leading RENDER_ROOTS segment is dropped, so the rendered tree mirrors
+    the path below it rather than repeating the grouping directory. A .tmpl
+    found anywhere else keeps its own path, so a one-off still works.
     """
     out = rel[:-len(".tmpl")]
-    prefix = TEMPLATE_DIR + os.sep
-    if out.startswith(prefix):
-        out = out[len(prefix):]
+    for root in RENDER_ROOTS:
+        prefix = root + os.sep
+        if out.startswith(prefix):
+            return out[len(prefix):]
     return out
 
 

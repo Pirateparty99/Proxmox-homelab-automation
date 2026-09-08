@@ -11,14 +11,14 @@ in `config.env`, which is gitignored.
 
 ```
 config.env          site values (gitignored)
-bootstrap.py        renders templates/ -> rendered/, and exports the same values to bash
+bootstrap.py        renders every *.tmpl -> rendered/, and exports the same values to bash
 lib/config.sh       what bash scripts source to get those values
 
-templates/          every *.tmpl, arranged as the rendered output should be
-  ad/                 PowerShell for the domain controllers / CA
+templates/          config-driven files that are not themselves scripts
   helm/<chart>/       values files and manifests
 
 scripts/            everything runnable, grouped by what it targets
+  ad/                 PowerShell for the domain controllers / CA
   okd/                against the OKD cluster
   helm/<chart>/       helm installs and the objects around them
   proxmox/            against the Proxmox API / nodes
@@ -91,11 +91,14 @@ environment variable set at run time wins over the file.
 Follow these and new scripts need no changes here.
 
 - **Never hardcode a site value.** Add it to `config.env.example` and `config.env`.
-- **A file needing site values is a `*.tmpl`, and lives under `templates/`.**
-  `bootstrap.py` renders it into `rendered/`, mirroring the path *below*
-  `templates/` — so `templates/helm/x.yaml.tmpl` becomes `rendered/helm/x.yaml`.
 - **Everything runnable lives under `scripts/`,** grouped by what it targets:
-  `scripts/okd`, `scripts/helm/<chart>`, `scripts/proxmox`.
+  `scripts/ad`, `scripts/okd`, `scripts/helm/<chart>`, `scripts/proxmox`.
+- **A file needing site values is a `*.tmpl`.** `bootstrap.py` renders it into
+  `rendered/`, dropping the leading `templates/` or `scripts/` — so
+  `templates/helm/x.yaml.tmpl` becomes `rendered/helm/x.yaml`, and
+  `scripts/ad/y.ps1.tmpl` becomes `rendered/ad/y.ps1`. A script that needs
+  rendering therefore sits with the other scripts; only non-script config
+  (chart values, manifests) lives in `templates/`.
 - **Bash scripts** `source lib/config.sh` and read the variables.
 - **PowerShell scripts** are templated whole — values are baked into `param()`
   defaults via the `psquote` filter, so the Windows host needs no config file.

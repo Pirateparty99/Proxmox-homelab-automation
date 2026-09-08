@@ -12,7 +12,8 @@ helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
   --namespace cert-manager \
   --create-namespace \
   --version "$CERT_MANAGER_VERSION" \
-  --values "$SCRIPT_DIR/../cert-man-values.yaml" \
+  #--values "$SCRIPT_DIR/../cert-man-values.yaml" \
+  --values "$RENDER_DIR/helm/certificate-manager/cert-man-values.yaml" \ 
   --set installCRDs=true
 
 echo "Installing ADCS Issuer version $ADCS_ISSUER_VERSION for Cert Manager:"

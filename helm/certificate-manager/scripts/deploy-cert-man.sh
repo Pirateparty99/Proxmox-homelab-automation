@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 echo "Installing Cert Manager version $CERT_MANAGER_VERSION with Helm:"
-helm upgrade --install cert-manage oci://quay.io/jetstack/charts/cert-manager \
+helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
   --namespace cert-manager \
   --create-namespace \
   --version "$CERT_MANAGER_VERSION" \

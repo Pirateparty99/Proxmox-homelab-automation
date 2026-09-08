@@ -82,6 +82,9 @@ def derive(cfg):
     default("ADCS_URL", "https://%s/certsrv" % cfg.get("ADCS_HOST", ""))
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))
+    # Same login, different node: PVE_API_HOST is whichever node hosts the DC VM,
+    # which need not be the one the ceph CLI is run on.
+    default("PVE_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_API_HOST", "")))
 
     # Paths in config.env may be relative to the repo root.
     ca = cfg.get("AD_CA_CERT_FILE", "")

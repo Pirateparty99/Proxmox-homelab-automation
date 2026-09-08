@@ -83,7 +83,56 @@ Rendering is strict: an undefined name raises `UndefinedError`, and a
 defined-but-empty one fails if the template marks it `| required(...)`. Neither
 silently produces a blank.
 
+## AD CS bring-up
+
+The issuer talks to the **Certification Authority Web Enrollment** pages
+(`/certsrv`) over HTTPS. That role service, not the CA on its own and not CES,
+is what it depends on — without it the issuer never goes ready.
+
+Render first (`./bootstrap.py`), then copy each rendered `.ps1` to the Windows
+host named and run it elevated:
+
+| # | On | Script | Does |
+| --- | --- | --- | --- |
+| 1 | CA host | `Install-AdcsCertificationAuthority.ps1` | AD CS role + Enterprise CA |
+| 2 | a DC | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
+| 3 | CA host | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
+
+Step 2 needs Domain Admins; 1 and 3 need Enterprise Admins. Reboot the web host
+between 2 and 3 so it picks up its new group membership, or
+`Test-ADServiceAccount` fails in step 3.
+
+Step 1 snapshots its own VM through the Proxmox API before it changes anything.
+Create a token and grant it `VM.Snapshot` on the DC:
+
+```bash
+pveum user token add root@pam automation --privsep 0
+```
+
+Put the token *id* in `PVE_API_TOKEN_ID`; the secret is never stored in the repo
+— export `PVE_API_TOKEN` on the Windows host or let the script prompt. Add
+`-WhatIf` to see what it would snapshot, or `-SnapshotFirst:$false` to skip.
+
+Taking a snapshot of a running DC is safe. **Rolling one back is not**, and no
+script here does it — see the `.NOTES` in `Install-AdcsCertificationAuthority.ps1`
+for the USN-rollback and VM-GenerationID detail before you ever restore one.
+
+Then, from the workstation:
+
+```bash
+helm/certificate-manager/scripts/deploy-cert-man.sh          # cert-manager + adcs-issuer
+helm/certificate-manager/scripts/deploy-adcs-clusterissuer.sh  # secret + ClusterAdcsIssuer
+```
+
+The second checks `ADCS_URL` is reachable and that its certificate validates
+against `AD_CA_CERT_FILE` before creating anything, then waits for the issuer to
+report ready. `SKIP_PREFLIGHT=1` bypasses the check.
+
+`New-AdcsCesGmsa.ps1` is separate and optional — CES (`ADCS-Enroll-Web-Svc`) is a
+different role service, for clients that enrol over the WS-Trust API. The
+adcs-issuer does not use it.
+
 ## Notes
 
-- The AD CS issuer needs the **Certification Authority Web Enrollment** role
-  service (`/certsrv`) on the CA, over HTTPS. It will not go ready without it.
+- The CA service (`CertSvc`) runs as LocalSystem and does **not** support a gMSA.
+  The gMSAs here are for the IIS application pools in front of it.

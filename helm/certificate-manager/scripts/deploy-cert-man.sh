@@ -16,4 +16,7 @@ helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
   --set installCRDs=true
 
 echo "Installing ADCS Issuer version $ADCS_ISSUER_VERSION for Cert Manager:"
-ISSUER_VERSION="$ADCS_ISSUER_VERSION" "$SCRIPT_DIR/deploy-adcs-clusterissuer.sh"
+ISSUER_VERSION="$ADCS_ISSUER_VERSION" "$SCRIPT_DIR/deploy-adcs-clusterissuer-helm.sh"
+
+echo "Configuring ADCS cluster cert issuer:"
+ISSUER_VERSION="$ADCS_ISSUER_VERSION" "$SCRIPT_DIR/configure-clusterissuer.sh"

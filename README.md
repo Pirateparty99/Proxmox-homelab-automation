@@ -137,9 +137,20 @@ stages the `.ps1` beside it, so `rendered/ad` is self-contained — one director
 holding everything that host needs:
 
 ```bash
+scripts/ad/authorize-ssh-key.sh          # once - so the copy runs unprompted
 scripts/ad/copy-to-ca-host.sh            # render, then scp to $ADCS_HOST
 scripts/ad/copy-to-ca-host.sh --zip      # or write rendered/ad.zip to move by hand
 ```
+
+`authorize-ssh-key.sh` installs your public key on the CA host. It exists
+because `ssh-copy-id` silently does nothing useful there: Windows OpenSSH sends
+accounts in the local Administrators group to a shared
+`C:\ProgramData\ssh\administrators_authorized_keys`, ignores
+`~/.ssh/authorized_keys` for them, and refuses that shared file unless its ACL
+grants only Administrators and SYSTEM. The script checks the account's group
+membership, picks the right file and fixes the ACL. Note that file is shared by
+every administrator on the host, so prefer a dedicated key (`--key`) over your
+general-purpose one.
 
 It checks both halves of the bundle are present before copying, so a half-staged
 directory fails here rather than on the CA host. One elevated run does the lot:

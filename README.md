@@ -51,10 +51,22 @@ openssl x509 -inform der -in ca.cer -out secrets/ad-ca.crt
 ```
 
 A plain run is offline and side-effect free: it renders, stages, and says which
-credentials are absent. `--credentials` additionally runs the script behind each
-missing one — which talks to Proxmox and the cluster, and may prompt. Credentials
-already present are left alone, because re-issuing a token invalidates the one
-already deployed.
+credentials are absent. `--credentials` additionally obtains the missing ones, in
+order:
+
+| Credential | Obtained by | Prompts for |
+| --- | --- | --- |
+| key-based ssh to the CA host | `scripts/ad/authorize-ssh-key.sh` | the `ADCS_SSH_USER` password, by ssh |
+| Proxmox API token | `scripts/proxmox/create-pve-api-token.sh` | nothing (uses your ssh key to the node) |
+| OKD kubeconfig | `scripts/okd/create-oc-token.sh` | the `OKD_LOGIN_USER` password, by `oc login` |
+
+**Run it from a terminal** — `oc` and `ssh` prompt for those passwords
+themselves. Nothing in this repo reads, stores or echoes a password; the tokens
+they produce are what gets written to `secrets/`.
+
+Credentials already present are left alone, because re-issuing a token
+invalidates the one already deployed. The ssh one has no artifact to check, so
+it is tested by trying it.
 
 Then run any script directly; they read the config themselves.
 
@@ -142,8 +154,8 @@ checks both before touching anything. For the cluster, run
 expires (24h for kubeadmin), so automation that worked yesterday fails today.
 That script creates a ServiceAccount bound to cluster-admin, issues it a
 non-expiring token and writes `secrets/okd-kubeconfig`, which `lib/config.sh`
-points `KUBECONFIG` at. It needs a session to create the account, so log in by
-hand once to bootstrap it — after that nothing else has to.
+points `KUBECONFIG` at. If there is no usable session it runs `oc login` for you
+and lets `oc` prompt for the password, so it bootstraps itself.
 
 That kubeconfig is a non-expiring cluster-admin credential; treat it as the
 cluster's root password. Revoke by deleting the namespace and clusterrolebinding

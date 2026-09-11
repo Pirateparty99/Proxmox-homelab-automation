@@ -10,8 +10,10 @@
 # token, and writes a kubeconfig using it to secrets/okd-kubeconfig.
 # lib/config.sh points KUBECONFIG at that file, so every script just works.
 #
-# BOOTSTRAP: this needs an authenticated session to create the account, so run
-# `oc login` once by hand first. After that, nothing else needs to.
+# BOOTSTRAP: creating the account needs an authenticated session, so if there is
+# no usable one this runs `oc login` for you. oc prompts for the password for
+# OKD_LOGIN_USER; it is typed straight into oc, never stored or echoed. After
+# this has run once, nothing needs to log in again.
 #
 # The generated kubeconfig verifies TLS properly: the API serves its own
 # self-signed root (CN=kube-apiserver-lb-signer) in the chain, so that is
@@ -47,12 +49,37 @@ run()  { if (( DRY_RUN )); then printf '    [dry-run] %s\n' "$*"; else eval "$@"
 # ------------------------------------------------------------------- preflight
 log "Preflight"
 command -v oc >/dev/null || die "oc not found in PATH"
-oc whoami >/dev/null 2>&1 \
-  || die "oc is not authenticated. Run 'oc login' once by hand - this script needs a session to create the account it then replaces."
-SERVER=$(oc whoami --show-server)
-info "logged in as $(oc whoami) on $SERVER"
-oc auth can-i create clusterrolebinding >/dev/null 2>&1 \
-  || die "this account cannot create a clusterrolebinding - log in as cluster-admin"
+SERVER="${OKD_API_URL:?set OKD_BASE_DOMAIN in config.env}"
+
+# Extracted before authenticating, because it needs no credentials and both the
+# login below and the kubeconfig at the end want it. The last certificate the
+# API serves is its own self-signed signer (CN=kube-apiserver-lb-signer), so
+# embedding it lets both verify TLS instead of skipping it.
+CA=$(mktemp); trap 'rm -f "$CA"' EXIT
+HOSTPORT=${SERVER#https://}
+openssl s_client -connect "$HOSTPORT" -showcerts </dev/null 2>/dev/null \
+  | awk '/BEGIN CERT/,/END CERT/' \
+  | awk '/BEGIN CERT/{n++} n==2' > "$CA"
+[[ -s "$CA" ]] || die "could not extract the API server CA from $HOSTPORT - is $SERVER reachable?"
+curl -s --cacert "$CA" -o /dev/null --max-time 8 "$SERVER/healthz" \
+  || die "the extracted CA does not verify $SERVER"
+info "API CA extracted and verified"
+
+# --------------------------------------------------------------------- login
+if oc whoami >/dev/null 2>&1; then
+  info "already authenticated as $(oc whoami)"
+elif (( DRY_RUN )); then
+  info "[dry-run] oc login $SERVER -u $OKD_LOGIN_USER   (would prompt for the password)"
+else
+  log "Logging in as ${OKD_LOGIN_USER:?set OKD_LOGIN_USER in config.env}"
+  info "oc will prompt for the password - it is not stored or echoed"
+  oc login "$SERVER" -u "$OKD_LOGIN_USER" --certificate-authority="$CA"
+fi
+
+if (( ! DRY_RUN )); then
+  oc auth can-i create clusterrolebinding >/dev/null 2>&1 \
+    || die "$(oc whoami) cannot create a clusterrolebinding - log in as cluster-admin"
+fi
 
 # ------------------------------------------------------------------- account
 log "ServiceAccount $NS/$SA"
@@ -95,17 +122,6 @@ TOKEN=$(printf '%s' "$TOKEN" | base64 -d)
 
 # ----------------------------------------------------------------- kubeconfig
 log "Writing $OUT"
-HOSTPORT=${SERVER#https://}
-CA=$(mktemp); trap 'rm -f "$CA"' EXIT
-# The last certificate in the chain is the self-signed signer; embedding it lets
-# the kubeconfig verify TLS instead of skipping it.
-openssl s_client -connect "$HOSTPORT" -showcerts </dev/null 2>/dev/null \
-  | awk '/BEGIN CERT/,/END CERT/' \
-  | awk '/BEGIN CERT/{n++} n==2' > "$CA"
-[[ -s "$CA" ]] || die "could not extract the API server CA from $HOSTPORT"
-curl -s --cacert "$CA" -o /dev/null --max-time 8 "$SERVER/healthz" \
-  || die "the extracted CA does not verify $SERVER - refusing to write a kubeconfig that cannot check TLS"
-
 mkdir -p "$(dirname "$OUT")"
 install -m 600 /dev/null "$OUT"
 KUBECONFIG="$OUT" oc config set-cluster okd --server="$SERVER" \

@@ -55,11 +55,18 @@ STAGED_FILES = [("scripts/ad/*.ps1", "ad")]
 # ones whose output is missing. A plain run never touches the network - it only
 # says which are absent - because rendering is something you do casually after
 # editing config.env, and it should not depend on being online or logged in.
+# Each entry is tested either by the file it produces, or - where it leaves no
+# artifact - by trying it. Order is the order they are obtained in.
 CREDENTIALS = [
-    ("secrets/pve-api-token.env", "scripts/proxmox/create-pve-api-token.sh",
-     "Proxmox API token, for snapshotting the DC"),
-    ("secrets/okd-kubeconfig", "scripts/okd/create-oc-token.sh",
-     "OKD kubeconfig, from a non-expiring ServiceAccount token"),
+    {"desc": "key-based ssh to the CA host",
+     "script": "scripts/ad/authorize-ssh-key.sh",
+     "check": "ssh"},
+    {"desc": "Proxmox API token, for snapshotting the DC",
+     "script": "scripts/proxmox/create-pve-api-token.sh",
+     "file": "secrets/pve-api-token.env"},
+    {"desc": "OKD kubeconfig, from a non-expiring ServiceAccount token",
+     "script": "scripts/okd/create-oc-token.sh",
+     "file": "secrets/okd-kubeconfig"},
 ]
 
 
@@ -111,6 +118,8 @@ def derive(cfg):
 
     # The adcs-issuer controller appends the page names itself, so no trailing slash.
     default("ADCS_URL", "https://%s/certsrv" % cfg.get("ADCS_HOST", ""))
+    # OKD puts the API on api.<base domain>:6443.
+    default("OKD_API_URL", "https://api.%s:6443" % cfg.get("OKD_BASE_DOMAIN", ""))
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))
     # Same login, different node: PVE_API_HOST is whichever node hosts the DC VM,
@@ -215,24 +224,44 @@ def stage(out_dir, dry_run=False):
     return results
 
 
-def credential_status():
-    """(output, script, description, present) for each credential."""
-    return [(out, script, desc, os.path.isfile(os.path.join(REPO_ROOT, out)))
-            for out, script, desc in CREDENTIALS]
+def _ssh_works(cfg):
+    """Whether key-based ssh to the CA host already works. Nothing is written
+    when it does, so the only way to know is to try it."""
+    target = "%s@%s" % (cfg.get("ADCS_SSH_USER", ""), cfg.get("ADCS_HOST", ""))
+    try:
+        with open(os.devnull, "w") as null:
+            return subprocess.call(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, "exit"],
+                stdout=null, stderr=null) == 0
+    except OSError:
+        return False
 
 
-def fetch_credentials(dry_run=False):
-    """Run the script behind each missing credential. Present ones are left
-    alone - re-issuing a token invalidates the one already deployed."""
-    for out, script, desc, present in credential_status():
+def credential_status(cfg):
+    """(credential, present, label) for each, where label names what was tested."""
+    out = []
+    for cred in CREDENTIALS:
+        if "file" in cred:
+            out.append((cred, os.path.isfile(os.path.join(REPO_ROOT, cred["file"])), cred["file"]))
+        else:
+            out.append((cred, _ssh_works(cfg), "ssh to %s" % cfg.get("ADCS_HOST", "")))
+    return out
+
+
+def fetch_credentials(cfg, dry_run=False):
+    """Run the script behind each missing credential, in order. Present ones are
+    left alone - re-issuing a token invalidates the one already deployed. These
+    scripts prompt: oc and ssh ask for passwords themselves, and nothing here
+    reads, stores or echoes one."""
+    for cred, present, label in credential_status(cfg):
         if present:
-            print("  have %s" % out)
+            print("  have %s" % label)
             continue
         if dry_run:
-            print("  would run %s -> %s" % (script, out))
+            print("  would run %s -> %s" % (cred["script"], label))
             continue
-        print("\n  %s: running %s" % (desc, script))
-        subprocess.check_call([os.path.join(REPO_ROOT, script)])
+        print("\n  %s: running %s" % (cred["desc"], cred["script"]))
+        subprocess.check_call([os.path.join(REPO_ROOT, cred["script"])])
 
 
 def main():
@@ -246,8 +275,8 @@ def main():
     ap.add_argument("--export", action="store_true", help="emit shell export lines")
     ap.add_argument("--json", action="store_true", help="emit the resolved config as JSON")
     ap.add_argument("--credentials", action="store_true",
-                    help="also obtain any missing credential in secrets/ (needs "
-                         "network access, and may prompt)")
+                    help="also obtain any missing credential (needs network "
+                         "access; oc and ssh will prompt for passwords)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -284,11 +313,12 @@ def main():
             print("  %s %s -> %s" % (verb, src, os.path.relpath(dest, REPO_ROOT)))
 
     if args.credentials:
-        fetch_credentials(dry_run=args.list)
+        fetch_credentials(cfg, dry_run=args.list)
     elif not args.quiet:
         # Worth saying, since the deployment stops on a missing one - but only
-        # when something is actually absent.
-        missing = [out for out, _, _, present in credential_status() if not present]
+        # when something is actually absent. The ssh check costs a connection
+        # attempt, so this is skipped under --quiet.
+        missing = [label for _, present, label in credential_status(cfg) if not present]
         if missing:
             print("\n  missing credentials: %s" % ", ".join(missing))
             print("  run ./bootstrap.py --credentials to obtain them")

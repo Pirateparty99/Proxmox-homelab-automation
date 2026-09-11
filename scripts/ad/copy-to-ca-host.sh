@@ -92,5 +92,5 @@ cat <<EOF
 
       cd $DEST
       \$env:PVE_API_TOKEN = '<secret from create-pve-api-token.sh>'
-      .\\Install-AdcsChain.ps1 -WhatIf
+      .\\Install-AdcsChain.ps1
 EOF

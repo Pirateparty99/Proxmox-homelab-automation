@@ -3,7 +3,8 @@
 # create-pve-api-token.sh - create the Proxmox API token the PowerShell AD CS
 #                           scripts use to snapshot the DC before they change it.
 #
-# Grants the token a purpose-built role on ONE VM rather than root's privileges:
+# Grants the token a purpose-built role ("SnapshotOnly") on ONE VM rather than
+# root's privileges:
 #
 #   VM.Audit      read the VM's config and the status of its own tasks
 #   VM.Snapshot   create (and delete) snapshots
@@ -31,7 +32,11 @@ set -euo pipefail
 PVE_SSH="${PVE_SSH:?set PVE_API_HOST in config.env}"
 PVE_DC_VMID="${PVE_DC_VMID:?set PVE_DC_VMID in config.env}"
 PVE_API_TOKEN_ID="${PVE_API_TOKEN_ID:?set PVE_API_TOKEN_ID in config.env}"
-PVE_TOKEN_ROLE="${PVE_TOKEN_ROLE:-PVESnapshotOnly}"
+# Proxmox reserves the "PVE" prefix (case-insensitive) for its built-in roles
+# and rejects any custom role ID starting with it:
+#   400 Parameter verification failed.
+#   roleid: cannot use role ID starting with the (case-insensitive) 'PVE' namespace
+PVE_TOKEN_ROLE="${PVE_TOKEN_ROLE:-SnapshotOnly}"
 
 DRY_RUN=0
 RECREATE=0
@@ -144,11 +149,11 @@ for r in rows:
 # ------------------------------------------------------------------------ next
 log "Next"
 cat <<EOF
-    On the CA host, before running Install-AdcsCertificationAuthority.ps1:
+    Export the secret, then run the deployment:
 
-      \$env:PVE_API_TOKEN = '<secret printed above>'
+      export PVE_API_TOKEN='<secret printed above>'
+      scripts/deploy-adcs.sh --dry-run      # then without --dry-run
 
-    Or omit it and let the script prompt. Verify without changing anything:
-
-      .\\Install-AdcsCertificationAuthority.ps1 -WhatIf
+    Or, running on the CA host by hand, set \$env:PVE_API_TOKEN there instead
+    and let Install-AdcsChain.ps1 pick it up.
 EOF

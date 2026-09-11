@@ -41,7 +41,11 @@ run()  { if (( DRY_RUN )); then printf '    [dry-run] %s\n' "$*"; else eval "$@"
 
 # ------------------------------------------------------------------- preflight
 log "Preflight"
-: "${PVE_API_TOKEN:?not set - the CA step needs it to snapshot the DC. Run scripts/proxmox/create-pve-api-token.sh}"
+
+echo "Create a API token to authenticate to Proxmox to create a snapshot of the DC:"
+run "'$SCRIPTS/proxmox/create-pve-api-token.sh'"
+
+echo "Testing ssh to DC01:"
 ssh -o BatchMode=yes -o ConnectTimeout=8 "${SSH_USER}@${SSH_HOST}" exit 2>/dev/null \
   || die "no key-based ssh to ${SSH_USER}@${SSH_HOST} - run scripts/ad/authorize-ssh-key.sh"
 oc whoami >/dev/null 2>&1 || die "oc is not authenticated - run 'oc login'"

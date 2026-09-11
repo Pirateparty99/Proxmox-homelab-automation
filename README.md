@@ -46,8 +46,15 @@ openssl x509 -inform der -in ca.cer -out secrets/ad-ca.crt
 ## Usage
 
 ```bash
-./bootstrap.py            # render templates - re-run after editing config.env
+./bootstrap.py                  # render templates - re-run after editing config.env
+./bootstrap.py --credentials    # ...and obtain any credential missing from secrets/
 ```
+
+A plain run is offline and side-effect free: it renders, stages, and says which
+credentials are absent. `--credentials` additionally runs the script behind each
+missing one — which talks to Proxmox and the cluster, and may prompt. Credentials
+already present are left alone, because re-issuing a token invalidates the one
+already deployed.
 
 Then run any script directly; they read the config themselves.
 
@@ -66,8 +73,9 @@ To get the same variables in your own shell:
 source lib/config.sh
 ```
 
-Other `bootstrap.py` flags: `--list` (what would render), `--export` (shell
-export lines), `--json` (resolved config).
+Other `bootstrap.py` flags: `--list` (what would render — combines with
+`--credentials` to show what would be fetched), `--export` (shell export lines),
+`--json` (resolved config).
 
 ## How it fits together
 

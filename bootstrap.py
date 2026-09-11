@@ -7,6 +7,7 @@ to the shell scripts.
     ./bootstrap.py --list          show what would be rendered
     ./bootstrap.py --export        emit `export K=V` lines for a shell to eval
     ./bootstrap.py --json          emit the resolved config as JSON
+    ./bootstrap.py --credentials   also obtain any missing credential in secrets/
 
 This is the single place where derived values are computed. lib/config.sh evals
 --export rather than deriving anything itself, so bash and the templates can
@@ -24,6 +25,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 
 try:
@@ -46,6 +48,19 @@ RENDER_ROOTS = ("templates", "scripts")
 # scripts next to the adcs.env they read, so it can be handed to the CA host as
 # one folder rather than assembled by hand from two places.
 STAGED_FILES = [("scripts/ad/*.ps1", "ad")]
+
+# Credentials are not rendered. They are obtained once from the live systems and
+# written into secrets/, so they are listed here rather than templated: as
+# (what it produces, what produces it, what it is for). --credentials runs the
+# ones whose output is missing. A plain run never touches the network - it only
+# says which are absent - because rendering is something you do casually after
+# editing config.env, and it should not depend on being online or logged in.
+CREDENTIALS = [
+    ("secrets/pve-api-token.env", "scripts/proxmox/create-pve-api-token.sh",
+     "Proxmox API token, for snapshotting the DC"),
+    ("secrets/okd-kubeconfig", "scripts/okd/create-oc-token.sh",
+     "OKD kubeconfig, from a non-expiring ServiceAccount token"),
+]
 
 
 def load_config(path):
@@ -200,6 +215,26 @@ def stage(out_dir, dry_run=False):
     return results
 
 
+def credential_status():
+    """(output, script, description, present) for each credential."""
+    return [(out, script, desc, os.path.isfile(os.path.join(REPO_ROOT, out)))
+            for out, script, desc in CREDENTIALS]
+
+
+def fetch_credentials(dry_run=False):
+    """Run the script behind each missing credential. Present ones are left
+    alone - re-issuing a token invalidates the one already deployed."""
+    for out, script, desc, present in credential_status():
+        if present:
+            print("  have %s" % out)
+            continue
+        if dry_run:
+            print("  would run %s -> %s" % (script, out))
+            continue
+        print("\n  %s: running %s" % (desc, script))
+        subprocess.check_call([os.path.join(REPO_ROOT, script)])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -210,6 +245,9 @@ def main():
     ap.add_argument("--list", action="store_true", help="show what would be rendered")
     ap.add_argument("--export", action="store_true", help="emit shell export lines")
     ap.add_argument("--json", action="store_true", help="emit the resolved config as JSON")
+    ap.add_argument("--credentials", action="store_true",
+                    help="also obtain any missing credential in secrets/ (needs "
+                         "network access, and may prompt)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -244,6 +282,16 @@ def main():
         verb = "would stage" if args.list else "staged"
         for src, dest in staged:
             print("  %s %s -> %s" % (verb, src, os.path.relpath(dest, REPO_ROOT)))
+
+    if args.credentials:
+        fetch_credentials(dry_run=args.list)
+    elif not args.quiet:
+        # Worth saying, since the deployment stops on a missing one - but only
+        # when something is actually absent.
+        missing = [out for out, _, _, present in credential_status() if not present]
+        if missing:
+            print("\n  missing credentials: %s" % ", ".join(missing))
+            print("  run ./bootstrap.py --credentials to obtain them")
 
 
 if __name__ == "__main__":

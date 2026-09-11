@@ -38,6 +38,9 @@ PVE_API_TOKEN_ID="${PVE_API_TOKEN_ID:?set PVE_API_TOKEN_ID in config.env}"
 #   roleid: cannot use role ID starting with the (case-insensitive) 'PVE' namespace
 PVE_TOKEN_ROLE="${PVE_TOKEN_ROLE:-SnapshotOnly}"
 
+# Where the secret lands. secrets/ is gitignored and already holds ad-ca.crt.
+TOKEN_ENV_FILE="${TOKEN_ENV_FILE:-$REPO_ROOT/secrets/pve-api-token.env}"
+
 DRY_RUN=0
 RECREATE=0
 for arg in "${@:-}"; do
@@ -120,12 +123,35 @@ fi
 if (( ! TOKEN_EXISTS )); then
   if (( DRY_RUN )); then
     info "[dry-run] pveum user token add $TOKEN_USER $TOKEN_NAME --privsep 1"
+    info "[dry-run] would write the secret to $TOKEN_ENV_FILE"
   else
-    log "Token secret - copy it now, it is not recoverable"
     # --privsep 1 (the default) means the token carries only the privileges
     # granted to it below, NOT everything $TOKEN_USER can do. With --privsep 0
     # this token would be a full root credential sitting on a Windows host.
-    pve_cmd "pveum user token add '$TOKEN_USER' '$TOKEN_NAME' --privsep 1 --comment 'AD CS scripts: snapshot VM $PVE_DC_VMID'"
+    #
+    # JSON rather than the default table: the secret is shown exactly once, so
+    # it has to be captured here rather than read off the terminal. It is
+    # deliberately not echoed - it goes straight to the file.
+    TOKEN_JSON=$(pve_cmd "pveum user token add '$TOKEN_USER' '$TOKEN_NAME' --privsep 1 --comment 'AD CS scripts: snapshot VM $PVE_DC_VMID' --output-format json")
+
+    mkdir -p "$(dirname "$TOKEN_ENV_FILE")"
+    # Create it empty and locked down BEFORE writing, so the secret is never
+    # briefly world-readable.
+    install -m 600 /dev/null "$TOKEN_ENV_FILE"
+    printf '%s' "$TOKEN_JSON" | python3 -c '
+import json, sys
+path, token_id = sys.argv[1], sys.argv[2]
+value = json.load(sys.stdin).get("value")
+if not value:
+    sys.exit("no \047value\047 in the pveum response - the token was created but the secret could not be captured")
+with open(path, "w") as fh:
+    fh.write("# Written by create-pve-api-token.sh. Gitignored; keep it that way.\n")
+    fh.write("# Sourced automatically by lib/config.sh.\n")
+    fh.write("export PVE_API_TOKEN_ID=%s\n" % json.dumps(token_id))
+    fh.write("export PVE_API_TOKEN=%s\n" % json.dumps(value))
+' "$TOKEN_ENV_FILE" "$PVE_API_TOKEN_ID"
+    info "secret written to $TOKEN_ENV_FILE (mode 600, not echoed)"
+    info "lib/config.sh sources it, so scripts/deploy-adcs.sh picks it up"
   fi
 fi
 

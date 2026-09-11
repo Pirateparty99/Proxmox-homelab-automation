@@ -13,7 +13,8 @@
 # failure will fail. Roll back to the snapshot step 2 takes and start again.
 #
 # Prerequisites, none of which this script sets up:
-#   - PVE_API_TOKEN exported (scripts/proxmox/create-pve-api-token.sh prints it)
+#   - PVE_API_TOKEN available (scripts/proxmox/create-pve-api-token.sh writes it to
+#     secrets/pve-api-token.env, which lib/config.sh sources automatically)
 #   - key-based ssh to the CA host (scripts/ad/authorize-ssh-key.sh)
 #   - oc logged in to the cluster
 #
@@ -45,9 +46,19 @@ log "Preflight"
 echo "Create a API token to authenticate to Proxmox to create a snapshot of the DC:"
 run "'$SCRIPTS/proxmox/create-pve-api-token.sh'"
 
+# lib/config.sh sourced secrets/pve-api-token.env at the top of this script,
+# which is before the line above had a chance to write it. Pick it up now, or
+# step 2 would send an empty token to the CA host.
+if [[ -z "${PVE_API_TOKEN:-}" && -f "$REPO_ROOT/secrets/pve-api-token.env" ]]; then
+    . "$REPO_ROOT/secrets/pve-api-token.env"
+fi
+(( DRY_RUN )) || : "${PVE_API_TOKEN:?still unset - create-pve-api-token.sh did not write secrets/pve-api-token.env. If the token already existed, its secret cannot be read back: re-run that script with --recreate}"
+
 echo "Testing ssh to DC01:"
 ssh -o BatchMode=yes -o ConnectTimeout=8 "${SSH_USER}@${SSH_HOST}" exit 2>/dev/null \
   || die "no key-based ssh to ${SSH_USER}@${SSH_HOST} - run scripts/ad/authorize-ssh-key.sh"
+
+echo "Testing OKD Client tool's auth:"
 oc whoami >/dev/null 2>&1 || die "oc is not authenticated - run 'oc login'"
 printf '    ssh %s@%s, oc as %s\n' "$SSH_USER" "$SSH_HOST" "$(oc whoami)"
 

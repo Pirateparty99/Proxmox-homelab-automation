@@ -29,6 +29,17 @@ fi
 eval "$_cfg_exports"
 unset _cfg_exports
 
+# The Proxmox API token secret deliberately does not live in config.env - it is
+# a credential, and config.env is a file people paste around. create-pve-api-token.sh
+# writes it to secrets/ (gitignored, mode 600) instead; source it here so
+# deploy-adcs.sh needs no manual export. An already-set PVE_API_TOKEN wins, so a
+# one-off override still works.
+_cfg_token="$REPO_ROOT/secrets/pve-api-token.env"
+if [[ -z "${PVE_API_TOKEN:-}" && -f "$_cfg_token" ]]; then
+    . "$_cfg_token"
+fi
+unset _cfg_token
+
 # render_templates [--list] [--quiet] - renders every *.tmpl into RENDER_DIR.
 render_templates() {
     python3 "$REPO_ROOT/bootstrap.py" "$@"

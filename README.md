@@ -128,9 +128,17 @@ the whole thing — bundle, the DC, cert-manager, the issuer:
 PVE_API_TOKEN=... scripts/deploy-adcs.sh --dry-run   # then without --dry-run
 ```
 
-It needs `PVE_API_TOKEN` exported, key-based ssh to the CA host, and `oc`
-logged in; it checks all three before touching anything, and sets up none of
-them. The rest of this section is what it does, step by step.
+It needs key-based ssh to the CA host and `oc` logged in, and checks both before
+touching anything. The Proxmox token it handles itself: `create-pve-api-token.sh`
+writes the secret to `secrets/pve-api-token.env` (gitignored, mode 600) and
+`lib/config.sh` sources it, so nothing has to be exported by hand. An already-set
+`PVE_API_TOKEN` still wins, for a one-off override.
+
+The secret is shown by Proxmox exactly once, so it is captured straight to that
+file rather than echoed. Delete the file and it cannot be recovered — re-issue
+with `create-pve-api-token.sh --recreate`.
+
+The rest of this section is what the deployment does, step by step.
 
 First create the Proxmox API token the CA step uses to snapshot the DC:
 

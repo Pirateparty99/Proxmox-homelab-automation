@@ -261,7 +261,13 @@ def fetch_credentials(cfg, dry_run=False):
             print("  would run %s -> %s" % (cred["script"], label))
             continue
         print("\n  %s: running %s" % (cred["desc"], cred["script"]))
-        subprocess.check_call([os.path.join(REPO_ROOT, cred["script"])])
+        try:
+            subprocess.check_call([os.path.join(REPO_ROOT, cred["script"])])
+        except subprocess.CalledProcessError as exc:
+            # The script has already said what went wrong on stderr; a Python
+            # traceback on top of that buries it.
+            sys.exit("\n%s failed (exit %d). Nothing further was attempted."
+                     % (cred["script"], exc.returncode))
 
 
 def main():

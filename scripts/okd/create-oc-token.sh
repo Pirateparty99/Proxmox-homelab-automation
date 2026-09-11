@@ -52,18 +52,45 @@ command -v oc >/dev/null || die "oc not found in PATH"
 SERVER="${OKD_API_URL:?set OKD_BASE_DOMAIN in config.env}"
 
 # Extracted before authenticating, because it needs no credentials and both the
-# login below and the kubeconfig at the end want it. The last certificate the
-# API serves is its own self-signed signer (CN=kube-apiserver-lb-signer), so
-# embedding it lets both verify TLS instead of skipping it.
+# login below and the kubeconfig at the end want it.
+#
+# TWO roots are needed, which is not obvious. The API server presents a cert
+# signed by CN=kube-apiserver-lb-signer, but `oc login` is redirected to the
+# OAuth server on the *.apps domain, whose cert is signed by a different
+# self-signed root, CN=ingress-operator@<n>. A bundle holding only the first
+# gets you:
+#     error: tls: failed to verify certificate: x509: certificate signed by
+#     unknown authority
+# Both are self-signed roots served as the last cert in their own chain.
 CA=$(mktemp); trap 'rm -f "$CA"' EXIT
-HOSTPORT=${SERVER#https://}
-openssl s_client -connect "$HOSTPORT" -showcerts </dev/null 2>/dev/null \
-  | awk '/BEGIN CERT/,/END CERT/' \
-  | awk '/BEGIN CERT/{n++} n==2' > "$CA"
-[[ -s "$CA" ]] || die "could not extract the API server CA from $HOSTPORT - is $SERVER reachable?"
+
+# extract_root <host:port> [servername] - append that endpoint's self-signed
+# root to $CA.
+extract_root() {
+  local hostport=$1 servername=${2:-} out
+  out=$(openssl s_client -connect "$hostport" \
+          ${servername:+-servername "$servername"} -showcerts </dev/null 2>/dev/null \
+        | awk '/BEGIN CERT/,/END CERT/' \
+        | awk '/BEGIN CERT/{n++} n==2')
+  [[ -n "$out" ]] || die "could not extract a root certificate from $hostport"
+  printf '%s\n' "$out" >> "$CA"
+}
+
+extract_root "${SERVER#https://}"
 curl -s --cacert "$CA" -o /dev/null --max-time 8 "$SERVER/healthz" \
   || die "the extracted CA does not verify $SERVER"
-info "API CA extracted and verified"
+
+# Ask the API where its OAuth server is rather than assuming the route name.
+# This is unauthenticated, and now verifiable with the CA above.
+OAUTH_HOST=$(curl -s --cacert "$CA" --max-time 8 \
+    "$SERVER/.well-known/oauth-authorization-server" \
+  | python3 -c 'import json,sys,urllib.parse; print(urllib.parse.urlparse(json.load(sys.stdin)["token_endpoint"]).netloc)')
+[[ -n "$OAUTH_HOST" ]] || die "could not discover the OAuth server from $SERVER"
+
+extract_root "${OAUTH_HOST}:443" "$OAUTH_HOST"
+curl -s --cacert "$CA" -o /dev/null --max-time 8 "https://${OAUTH_HOST}/healthz" \
+  || die "the CA bundle does not verify the OAuth server at $OAUTH_HOST"
+info "CA bundle covers the API and the OAuth server at $OAUTH_HOST"
 
 # --------------------------------------------------------------------- login
 if oc whoami >/dev/null 2>&1; then

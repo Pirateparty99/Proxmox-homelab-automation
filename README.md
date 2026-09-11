@@ -121,6 +121,17 @@ The issuer talks to the **Certification Authority Web Enrollment** pages
 (`/certsrv`) over HTTPS. That role service, not the CA on its own and not CES,
 is what it depends on — without it the issuer never goes ready.
 
+Once the three prerequisites below are in place, `scripts/deploy-adcs.sh` runs
+the whole thing — bundle, the DC, cert-manager, the issuer:
+
+```bash
+PVE_API_TOKEN=... scripts/deploy-adcs.sh --dry-run   # then without --dry-run
+```
+
+It needs `PVE_API_TOKEN` exported, key-based ssh to the CA host, and `oc`
+logged in; it checks all three before touching anything, and sets up none of
+them. The rest of this section is what it does, step by step.
+
 First create the Proxmox API token the CA step uses to snapshot the DC:
 
 ```bash

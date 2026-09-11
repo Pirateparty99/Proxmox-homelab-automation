@@ -7,12 +7,13 @@
     Run on a domain controller, or any domain member with RSAT-AD-PowerShell, as
     a member of Domain Admins.
 
-    This creates and configures the account in AD only. Installing it on the web
-    enrollment host and binding it to the application pool happen there -
-    Install-AdcsWebEnrollment.ps1 does both, and the commands are printed at the
-    end for reference.
+    Assumes none of this exists yet: it adds the forest's KDS root key, creates
+    the retrieval group and creates the account. Against a domain where any of
+    those are already present it will fail rather than reconcile them.
 
-    Safe to re-run - an existing account is updated rather than duplicated.
+    This creates the account in AD only. Installing it on the web enrollment
+    host and binding it to the application pool happen there -
+    Install-AdcsWebEnrollment.ps1 does both.
 
 .NOTES
     The CA service (CertSvc) itself runs as LocalSystem on an Enterprise CA and
@@ -46,81 +47,54 @@ $ErrorActionPreference = 'Stop'
 # Site values come from adcs.env, so this file stays generic. Anything passed
 # on the command line wins over the file.
 $cfg = & "$PSScriptRoot\Get-AdcsConfig.ps1" -ConfigFile $ConfigFile -Require @('ADCS_HOST', 'ADCS_WEB_GMSA_NAME', 'ADCS_WEB_GROUP_NAME', 'AD_GROUP_BASE_DN')
-if (-not $Name)       { $Name      = $cfg.ADCS_WEB_GMSA_NAME }
-if (-not $GroupName)  { $GroupName = $cfg.ADCS_WEB_GROUP_NAME }
-if (-not $WebHost)    { $WebHost   = $cfg.ADCS_HOST }
-if (-not $CaHost)     { $CaHost    = $cfg.ADCS_HOST }
-if (-not $GroupPath)  { $GroupPath = $cfg.AD_GROUP_BASE_DN }
+if (-not $Name)      { $Name      = $cfg.ADCS_WEB_GMSA_NAME }
+if (-not $GroupName) { $GroupName = $cfg.ADCS_WEB_GROUP_NAME }
+if (-not $WebHost)   { $WebHost   = $cfg.ADCS_HOST }
+if (-not $CaHost)    { $CaHost    = $cfg.ADCS_HOST }
+if (-not $GroupPath) { $GroupPath = $cfg.AD_GROUP_BASE_DN }
 
 Import-Module ActiveDirectory
 
-# gMSA passwords are derived from a KDS root key. Without one present in the
-# forest, New-ADServiceAccount fails. A newly added key is normally only usable
-# after 10 hours (it waits for AD replication); backdating the effective time is
-# the standard workaround on a small or single-DC domain.
-if (-not (Get-KdsRootKey)) {
-    Write-Host "No KDS root key in the forest - adding one (backdated so it is usable immediately)."
-    Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
-}
+# gMSA passwords are derived from a KDS root key. A newly added key is normally
+# only usable after 10 hours (it waits for AD replication); backdating the
+# effective time is the standard workaround on a small or single-DC domain.
+Write-Host "Adding the forest KDS root key (backdated so it is usable immediately)."
+Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
 
 # Only computers in this group may retrieve the gMSA password. Using a group
 # rather than naming the host directly means adding a second web enrollment
 # server later requires no change to the account itself.
-$group = Get-ADGroup -Filter "Name -eq '$GroupName'" -ErrorAction SilentlyContinue
-if (-not $group) {
-    $group = New-ADGroup -Name $GroupName -GroupScope Global -GroupCategory Security -Path $GroupPath -PassThru
-    Write-Host "Created group $GroupName."
-}
+$group = New-ADGroup -Name $GroupName -GroupScope Global -GroupCategory Security -Path $GroupPath -PassThru
+Write-Host "Created group $GroupName."
 
-$webShort    = $WebHost.Split('.')[0]
-$webComputer = Get-ADComputer -Identity $webShort
-$members     = @(Get-ADGroupMember -Identity $group | Select-Object -ExpandProperty distinguishedName)
-if ($members -notcontains $webComputer.DistinguishedName) {
-    Add-ADGroupMember -Identity $group -Members $webComputer
-    Write-Host "Added $webShort to $GroupName."
-}
+$webShort = $WebHost.Split('.')[0]
+Add-ADGroupMember -Identity $group -Members (Get-ADComputer -Identity $webShort)
+Write-Host "Added $webShort to $GroupName."
 
 # certsrv is reached over HTTP(S), so the account needs HTTP SPNs on both the
 # FQDN and the short name for Kerberos to succeed either way the client asks.
 # Moving these SPNs onto the gMSA is what makes useAppPoolCredentials necessary
-# on the IIS side - see the note printed at the end.
-$spns = @("HTTP/$WebHost", "HTTP/$webShort")
-
-if (Get-ADServiceAccount -Filter "Name -eq '$Name'" -ErrorAction SilentlyContinue) {
-    Write-Host "gMSA $Name exists - updating."
-    Set-ADServiceAccount -Identity $Name `
-        -PrincipalsAllowedToRetrieveManagedPassword $group `
-        -ServicePrincipalNames @{ Replace = $spns } `
-        -KerberosEncryptionType AES128, AES256
-} else {
-    New-ADServiceAccount -Name $Name `
-        -DNSHostName $WebHost `
-        -Description 'Runs the AD CS web enrollment (/certsrv) IIS application pool' `
-        -PrincipalsAllowedToRetrieveManagedPassword $group `
-        -ServicePrincipalNames $spns `
-        -KerberosEncryptionType AES128, AES256
-    Write-Host "Created gMSA $Name."
-}
+# on the IIS side.
+New-ADServiceAccount -Name $Name `
+    -DNSHostName $WebHost `
+    -Description 'Runs the AD CS web enrollment (/certsrv) IIS application pool' `
+    -PrincipalsAllowedToRetrieveManagedPassword $group `
+    -ServicePrincipalNames @("HTTP/$WebHost", "HTTP/$webShort") `
+    -KerberosEncryptionType AES128, AES256
+Write-Host "Created gMSA $Name."
 
 # When /certsrv runs on the CA itself it submits over local RPC and needs no
 # delegation. Split across hosts it impersonates the caller to the CA, so it
 # needs constrained delegation to the CA's RPC interface - without it the client
 # authenticates to IIS and the request then fails inside the web service.
 if ($WebHost -ne $CaHost) {
-    $delegateTo = @("rpcss/$CaHost", "HOST/$CaHost")
-    Set-ADServiceAccount -Identity $Name -Replace @{ 'msDS-AllowedToDelegateTo' = $delegateTo }
+    Set-ADServiceAccount -Identity $Name -Replace @{
+        'msDS-AllowedToDelegateTo' = @("rpcss/$CaHost", "HOST/$CaHost")
+    }
     Write-Host "Web enrollment is remote from the CA - added constrained delegation to $CaHost."
-} else {
-    Write-Host "Web enrollment is on the CA itself - no delegation needed."
 }
 
-Get-ADServiceAccount -Identity $Name -Properties PrincipalsAllowedToRetrieveManagedPassword,
-    ServicePrincipalNames, msDS-AllowedToDelegateTo, KerberosEncryptionType |
-    Format-List Name, DNSHostName, Enabled, ServicePrincipalNames,
-                PrincipalsAllowedToRetrieveManagedPassword, msDS-AllowedToDelegateTo
-
-$netbios = (Get-ADDomain).NetBIOSName
-$account = $netbios + '\' + $Name + '$'
+$account = (Get-ADDomain).NetBIOSName + '\' + $Name + '$'
 
 Write-Host ""
 Write-Host "Next, on ${WebHost}:"
@@ -131,9 +105,8 @@ Write-Host ""
 Write-Host "  Install-ADServiceAccount -Identity $Name"
 Write-Host "  Test-ADServiceAccount    -Identity $Name     # must return True before continuing"
 Write-Host ""
-Write-Host "  ad/scripts/Install-AdcsWebEnrollment.ps1 -AppPoolIdentity '$account'"
+Write-Host "  .\Install-AdcsWebEnrollment.ps1"
 Write-Host ""
-Write-Host "Because the HTTP SPNs now belong to $account rather than the computer"
+Write-Host "Because the HTTP SPNs belong to $account rather than the computer"
 Write-Host "account, IIS must decrypt Kerberos tickets with the app pool identity."
-Write-Host "Install-AdcsWebEnrollment.ps1 sets useAppPoolCredentials for you; without"
-Write-Host "it every request returns 401 even though the SPNs are correct."
+Write-Host "Install-AdcsWebEnrollment.ps1 sets useAppPoolCredentials for you."

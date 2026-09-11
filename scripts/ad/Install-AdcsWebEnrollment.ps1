@@ -4,14 +4,14 @@
     which is the endpoint the cert-manager adcs-issuer talks to.
 
 .DESCRIPTION
-    Run on the CA host (or the web enrollment host, if separate) from an elevated
-    session, as a member of Enterprise Admins.
+    Run on the CA host from an elevated session, as a member of Enterprise
+    Admins, after Install-AdcsCertificationAuthority.ps1 and
+    New-AdcsWebEnrollmentGmsa.ps1.
 
-    Installs the ADCS-Web-Enrollment role service, puts /certsrv in its own
-    application pool, optionally runs that pool under a gMSA, binds an HTTPS
-    certificate, and configures Windows authentication.
-
-    Safe to re-run - each step checks its own state first.
+    Assumes a clean IIS with no /certsrv application, no HTTPS binding and no
+    dedicated application pool. It does not check for, or adapt to, existing
+    configuration - against a host already serving /certsrv it will fail rather
+    than reconfigure it.
 
 .NOTES
     The adcs-issuer POSTs to <url>/certfnsh.asp and parses the HTML reply, so
@@ -37,13 +37,7 @@ param(
     [string]$AppPoolName = 'CertSrvAppPool',
 
     # Pass -UseGmsa:$false to leave the pool as ApplicationPoolIdentity.
-    [bool]$UseGmsa = $true,
-
-    # Existing LocalMachine\My certificate to bind. Left empty, the script reuses
-    # a suitable one or enrols a new one from the CA.
-    [string]$SslCertThumbprint = '',
-
-    [bool]$RequireSsl = $true
+    [bool]$UseGmsa = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,11 +45,10 @@ $ErrorActionPreference = 'Stop'
 # Site values come from adcs.env, so this file stays generic. Anything passed
 # on the command line wins over the file.
 $cfg = & "$PSScriptRoot\Get-AdcsConfig.ps1" -ConfigFile $ConfigFile -Require @('ADCS_HOST', 'ADCS_TEMPLATE', 'AD_NETBIOS')
-if (-not $WebHost)   { $WebHost  = $cfg.ADCS_HOST }
-if (-not $Template)  { $Template = $cfg.ADCS_TEMPLATE }
-if (-not $GmsaName)  { $GmsaName = $cfg.ADCS_WEB_GMSA_NAME }
-if (-not $Netbios)   { $Netbios  = $cfg.AD_NETBIOS }
-
+if (-not $WebHost)  { $WebHost  = $cfg.ADCS_HOST }
+if (-not $Template) { $Template = $cfg.ADCS_TEMPLATE }
+if (-not $GmsaName) { $GmsaName = $cfg.ADCS_WEB_GMSA_NAME }
+if (-not $Netbios)  { $Netbios  = $cfg.AD_NETBIOS }
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole(
@@ -65,104 +58,47 @@ if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole(
 
 # ---------------------------------------------------------------- role service
 
-if ((Get-WindowsFeature -Name ADCS-Web-Enrollment).Installed) {
-    Write-Host "Role service ADCS-Web-Enrollment is already installed."
-} else {
-    Write-Host "Installing role service ADCS-Web-Enrollment..."
-    Install-WindowsFeature -Name ADCS-Web-Enrollment -IncludeManagementTools | Out-Null
-}
+Write-Host "Installing role service ADCS-Web-Enrollment..."
+Install-WindowsFeature -Name ADCS-Web-Enrollment -IncludeManagementTools | Out-Null
 
 Import-Module ADCSDeployment
 Import-Module WebAdministration
 
-# Install-AdcsWebEnrollment is what actually creates the /CertSrv application;
-# installing the feature only puts the files on disk.
-if (Test-Path 'IIS:\Sites\Default Web Site\CertSrv') {
-    Write-Host "/certsrv application already exists."
-} else {
-    Write-Host "Configuring web enrollment..."
-    Install-AdcsWebEnrollment -Force | Out-Null
-}
+# Installing the feature only puts the files on disk; this creates the /CertSrv
+# application under the Default Web Site.
+Write-Host "Configuring web enrollment..."
+Install-AdcsWebEnrollment -Force | Out-Null
 
 # ------------------------------------------------------------- TLS certificate
 
-function Get-SuitableCert {
-    param([string]$Dns)
-    # Server-auth EKU, matching DNS name, currently valid, with a usable private key.
-    Get-ChildItem Cert:\LocalMachine\My |
-        Where-Object {
-            $_.HasPrivateKey -and
-            $_.NotAfter -gt (Get-Date) -and
-            $_.NotBefore -le (Get-Date) -and
-            ($_.EnhancedKeyUsageList.ObjectId -contains '1.3.6.1.5.5.7.3.1') -and
-            ($_.DnsNameList.Unicode -contains $Dns)
-        } |
-        Sort-Object NotAfter -Descending |
-        Select-Object -First 1
-}
+# Enrols as the computer account, so the template must grant it Enroll. The
+# stock WebServer template grants Enroll to admins only, so this is the step
+# most likely to fail on a fresh CA.
+Write-Host "Enrolling a '$Template' certificate for $WebHost..."
+$enrolled = Get-Certificate -Template $Template `
+                            -SubjectName "CN=$WebHost" `
+                            -DnsName $WebHost `
+                            -CertStoreLocation Cert:\LocalMachine\My
+$cert = $enrolled.Certificate
+Write-Host "Enrolled $($cert.Thumbprint)."
 
-if ($SslCertThumbprint) {
-    $cert = Get-Item "Cert:\LocalMachine\My\$SslCertThumbprint"
-    Write-Host "Using supplied certificate $($cert.Thumbprint)."
-} else {
-    $cert = Get-SuitableCert -Dns $WebHost
-    if ($cert) {
-        Write-Host "Reusing certificate $($cert.Thumbprint) (expires $($cert.NotAfter))."
-    } else {
-        Write-Host "Enrolling a new '$Template' certificate for $WebHost..."
-        # Enrols as the computer account, so the template must grant it Enroll.
-        # The stock WebServer template grants Enroll to admins only, so this is
-        # the step most likely to fail on a default CA - the catch explains it.
-        try {
-            $enrolled = Get-Certificate -Template $Template `
-                                        -SubjectName "CN=$WebHost" `
-                                        -DnsName $WebHost `
-                                        -CertStoreLocation Cert:\LocalMachine\My
-            $cert = $enrolled.Certificate
-        } catch {
-            throw @"
-Could not enrol a '$Template' certificate for $WebHost as the computer account: $($_.Exception.Message)
-
-Grant the CA host's computer account Enroll on the '$Template' template, or issue
-the certificate by hand and re-run with -SslCertThumbprint <thumbprint>.
-"@
-        }
-        Write-Host "Enrolled $($cert.Thumbprint)."
-    }
-}
-
-if (-not (Get-WebBinding -Name 'Default Web Site' -Protocol https -Port 443)) {
-    New-WebBinding -Name 'Default Web Site' -Protocol https -Port 443
-    Write-Host "Added HTTPS binding on port 443."
-}
-
-# Re-pointing the binding is idempotent and repairs a stale/expired thumbprint.
-if (Test-Path 'IIS:\SslBindings\0.0.0.0!443') {
-    Remove-Item 'IIS:\SslBindings\0.0.0.0!443' -Force
-}
+New-WebBinding -Name 'Default Web Site' -Protocol https -Port 443
 New-Item -Path 'IIS:\SslBindings\0.0.0.0!443' -Value $cert | Out-Null
 Write-Host "Bound $($cert.Thumbprint) to 0.0.0.0:443."
 
 # ------------------------------------------------------------- application pool
 
-# /certsrv ships in DefaultAppPool. Giving it a dedicated pool means the gMSA
-# identity below applies to certsrv alone rather than every app on the site.
-if (-not (Test-Path "IIS:\AppPools\$AppPoolName")) {
-    New-WebAppPool -Name $AppPoolName | Out-Null
-    Write-Host "Created application pool $AppPoolName."
-}
+# /certsrv ships in DefaultAppPool. A dedicated pool means the gMSA identity
+# below applies to certsrv alone rather than every app on the site. certsrv is
+# classic ASP, so the pool has to be in Classic pipeline mode.
+New-WebAppPool -Name $AppPoolName | Out-Null
 Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name managedPipelineMode -Value 'Classic'
 Set-ItemProperty 'IIS:\Sites\Default Web Site\CertSrv' -Name applicationPool -Value $AppPoolName
 
 if ($UseGmsa -and $GmsaName) {
-    $account = $Netbios + '\' + $GmsaName + '$'
-    # Test-ADServiceAccount lives in the ActiveDirectory module, which is not
-    # present by default on a CA host that is not also a DC.
-    if (-not (Get-Module -ListAvailable ActiveDirectory)) {
-        throw "The ActiveDirectory module is required to verify the gMSA. Install it with: Install-WindowsFeature RSAT-AD-PowerShell   (or re-run with -UseGmsa:`$false)"
-    }
     Import-Module ActiveDirectory
-    if (-not (Test-ADServiceAccount -Identity $GmsaName -ErrorAction SilentlyContinue)) {
+    $account = $Netbios + '\' + $GmsaName + '$'
+    if (-not (Test-ADServiceAccount -Identity $GmsaName)) {
         throw "Test-ADServiceAccount failed for $GmsaName. Run Install-ADServiceAccount -Identity $GmsaName first (and reboot if the host was only just added to the retrieval group)."
     }
     # identityType 3 = SpecificUser. A gMSA takes an empty password - Windows
@@ -171,8 +107,6 @@ if ($UseGmsa -and $GmsaName) {
     Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name processModel.userName -Value $account
     Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name processModel.password -Value ''
     Write-Host "Application pool runs as $account."
-} else {
-    Write-Host "Application pool left as ApplicationPoolIdentity."
 }
 
 # ------------------------------------------------------------- authentication
@@ -187,32 +121,27 @@ Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $app `
     -Filter '/system.webServer/security/authentication/windowsAuthentication' `
     -Name enabled -Value $true
 
-# The HTTP SPNs live on the gMSA, not the computer account, so IIS has to use the
-# app pool identity to decrypt the service ticket. Without this every request
-# returns 401 no matter how correct the SPNs are.
 if ($UseGmsa -and $GmsaName) {
+    # The HTTP SPNs live on the gMSA, not the computer account, so IIS has to
+    # use the app pool identity to decrypt the service ticket. Without this
+    # every request returns 401 no matter how correct the SPNs are.
     Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $app `
         -Filter '/system.webServer/security/authentication/windowsAuthentication' `
         -Name useAppPoolCredentials -Value $true
-    Write-Host "Set useAppPoolCredentials on /certsrv."
 }
 
 # Negotiate first so Kerberos is preferred; NTLM stays as the fallback the
 # adcs-issuer uses if it cannot get a ticket.
 Clear-WebConfiguration -PSPath 'IIS:\' -Location $app `
-    -Filter '/system.webServer/security/authentication/windowsAuthentication/providers' `
-    -ErrorAction SilentlyContinue
+    -Filter '/system.webServer/security/authentication/windowsAuthentication/providers'
 foreach ($provider in @('Negotiate', 'NTLM')) {
     Add-WebConfiguration -PSPath 'IIS:\' -Location $app `
         -Filter '/system.webServer/security/authentication/windowsAuthentication/providers' `
         -Value $provider
 }
 
-if ($RequireSsl) {
-    Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $app `
-        -Filter '/system.webServer/security/access' -Name sslFlags -Value 'Ssl'
-    Write-Host "/certsrv now requires SSL."
-}
+Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $app `
+    -Filter '/system.webServer/security/access' -Name sslFlags -Value 'Ssl'
 
 Restart-WebAppPool -Name $AppPoolName
 iisreset /noforce | Out-Null
@@ -226,18 +155,11 @@ try {
     Write-Host "GET $url -> $($resp.StatusCode) (authenticated OK)"
 } catch {
     $code = $_.Exception.Response.StatusCode.value__
-    if ($code) {
-        Write-Warning "GET $url -> $code"
-    } else {
-        Write-Warning "GET $url failed: $($_.Exception.Message)"
-    }
+    if ($code) { Write-Warning "GET $url -> $code" }
+    else { Write-Warning "GET $url failed: $($_.Exception.Message)" }
 }
-
-Write-Host ""
-Write-Host "Templates published on this CA:"
-certutil -CATemplates | Select-String -Pattern $Template
 
 Write-Host ""
 Write-Host "Set in config.env:  ADCS_URL=https://$WebHost/certsrv"
 Write-Host "Then, from the workstation:"
-Write-Host "  helm/certificate-manager/scripts/deploy-adcs-clusterissuer.sh"
+Write-Host "  scripts/helm/certificate-manager/configure-clusterissuer.sh"

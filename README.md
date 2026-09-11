@@ -157,7 +157,7 @@ directory fails here rather than on the CA host. One elevated run does the lot:
 
 ```powershell
 $env:PVE_API_TOKEN = '<secret>'      # or let it prompt
-.\Install-AdcsChain.ps1 -WhatIf     # then without -WhatIf
+.\Install-AdcsChain.ps1
 ```
 
 It calls the three scripts in order, and installs the gMSA on the host in
@@ -169,8 +169,14 @@ between:
 | 2 | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
 | 3 | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
 
-Every step is idempotent, so re-running after a failure is safe; `-From <step>`
-resumes. Run as Enterprise Admins — step 2 alone would only need Domain Admins.
+Run as Enterprise Admins — step 2 alone would only need Domain Admins.
+
+**These are one-shot, from-scratch scripts.** Every step assumes nothing it
+creates already exists — no CA on the host, no KDS root key in the forest, no
+`/certsrv` application, no HTTPS binding. That keeps them short and means they
+never silently adapt to a half-configured host, but it also means **re-running
+after a partial failure will fail** on whatever the first run did create. Roll
+back to the snapshot the CA step takes and start again.
 
 This works as one run because the CA host here is also a domain controller. Split
 those roles across machines and the three scripts have to be run separately, on

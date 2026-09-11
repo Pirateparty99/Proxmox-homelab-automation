@@ -58,7 +58,7 @@ echo "Testing ssh to DC01:"
 ssh -o BatchMode=yes -o ConnectTimeout=8 "${SSH_USER}@${SSH_HOST}" exit 2>/dev/null \
   || die "no key-based ssh to ${SSH_USER}@${SSH_HOST} - run scripts/ad/authorize-ssh-key.sh"
 
-echo "Testing OKD Client tool's auth:"
+echo "Testing Openshift Client tool's auth:"
 oc whoami >/dev/null 2>&1 || die "oc is not authenticated - run 'oc login'"
 printf '    ssh %s@%s, oc as %s\n' "$SSH_USER" "$SSH_HOST" "$(oc whoami)"
 

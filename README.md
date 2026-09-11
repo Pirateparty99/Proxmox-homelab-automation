@@ -128,8 +128,18 @@ the whole thing — bundle, the DC, cert-manager, the issuer:
 PVE_API_TOKEN=... scripts/deploy-adcs.sh --dry-run   # then without --dry-run
 ```
 
-It needs key-based ssh to the CA host and `oc` logged in, and checks both before
-touching anything. The Proxmox token it handles itself: `create-pve-api-token.sh`
+It needs key-based ssh to the CA host and a working cluster credential, and
+checks both before touching anything. For the cluster, run
+`scripts/okd/create-oc-token.sh` once: `oc login` hands out an OAuth token that
+expires (24h for kubeadmin), so automation that worked yesterday fails today.
+That script creates a ServiceAccount bound to cluster-admin, issues it a
+non-expiring token and writes `secrets/okd-kubeconfig`, which `lib/config.sh`
+points `KUBECONFIG` at. It needs a session to create the account, so log in by
+hand once to bootstrap it — after that nothing else has to.
+
+That kubeconfig is a non-expiring cluster-admin credential; treat it as the
+cluster's root password. Revoke by deleting the namespace and clusterrolebinding
+it names. The Proxmox token it handles itself: `create-pve-api-token.sh`
 writes the secret to `secrets/pve-api-token.env` (gitignored, mode 600) and
 `lib/config.sh` sources it, so nothing has to be exported by hand. An already-set
 `PVE_API_TOKEN` still wins, for a one-off override.

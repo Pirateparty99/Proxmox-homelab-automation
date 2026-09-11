@@ -40,6 +40,16 @@ if [[ -z "${PVE_API_TOKEN:-}" && -f "$_cfg_token" ]]; then
 fi
 unset _cfg_token
 
+# Same idea for the cluster: scripts/okd/create-oc-token.sh writes a kubeconfig
+# backed by a non-expiring ServiceAccount token, so nothing depends on an
+# `oc login` session that times out. config.env's KUBECONFIG, or one already in
+# the environment, still wins.
+_cfg_kubeconfig="$REPO_ROOT/secrets/okd-kubeconfig"
+if [[ -z "${KUBECONFIG:-}" && -f "$_cfg_kubeconfig" ]]; then
+    export KUBECONFIG="$_cfg_kubeconfig"
+fi
+unset _cfg_kubeconfig
+
 # render_templates [--list] [--quiet] - renders every *.tmpl into RENDER_DIR.
 render_templates() {
     python3 "$REPO_ROOT/bootstrap.py" "$@"

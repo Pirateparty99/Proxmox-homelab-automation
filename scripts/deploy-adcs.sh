@@ -59,8 +59,21 @@ ssh -o BatchMode=yes -o ConnectTimeout=8 "${SSH_USER}@${SSH_HOST}" exit 2>/dev/n
   || die "no key-based ssh to ${SSH_USER}@${SSH_HOST} - run scripts/ad/authorize-ssh-key.sh"
 
 echo "Testing Openshift Client tool's auth:"
-oc whoami >/dev/null 2>&1 || die "oc is not authenticated - run 'oc login'"
-printf '    ssh %s@%s, oc as %s\n' "$SSH_USER" "$SSH_HOST" "$(oc whoami)"
+if ! oc whoami >/dev/null 2>&1; then
+  # `oc login` hands out a token that expires, so rather than telling you to run
+  # it again, mint a credential that does not. This prompts for the
+  # OKD_LOGIN_USER password.
+  run "'$SCRIPTS/okd/create-oc-token.sh'"
+
+  # Same ordering problem as the Proxmox token above: lib/config.sh looked for
+  # the kubeconfig before the line above had a chance to write it.
+  if [[ -z "${KUBECONFIG:-}" && -f "$REPO_ROOT/secrets/okd-kubeconfig" ]]; then
+      export KUBECONFIG="$REPO_ROOT/secrets/okd-kubeconfig"
+  fi
+fi
+(( DRY_RUN )) || oc whoami >/dev/null 2>&1 \
+  || die "oc is still not authenticated after scripts/okd/create-oc-token.sh"
+(( DRY_RUN )) || printf '    ssh %s@%s, oc as %s\n' "$SSH_USER" "$SSH_HOST" "$(oc whoami)"
 
 # ------------------------------------------------------------------ 1. bundle
 log "1/4  Copying the bundle to $SSH_HOST"

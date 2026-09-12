@@ -7,9 +7,9 @@
     Run on a domain controller, or any domain member with RSAT-AD-PowerShell, as
     a member of Domain Admins.
 
-    Assumes none of this exists yet: it adds the forest's KDS root key, creates
-    the retrieval group and creates the account. Against a domain where any of
-    those are already present it will fail rather than reconcile them.
+    Safe to re-run: the KDS root key, retrieval group, group membership and the
+    account itself are each created only if absent, and an existing account is
+    updated in place.
 
     This creates the account in AD only. Installing it on the web enrollment
     host and binding it to the application pool happen there -
@@ -58,30 +58,53 @@ Import-Module ActiveDirectory
 # gMSA passwords are derived from a KDS root key. A newly added key is normally
 # only usable after 10 hours (it waits for AD replication); backdating the
 # effective time is the standard workaround on a small or single-DC domain.
-Write-Host "Adding the forest KDS root key (backdated so it is usable immediately)."
-Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
+if (Get-KdsRootKey) {
+    Write-Host "Forest already has a KDS root key."
+} else {
+    Write-Host "Adding the forest KDS root key (backdated so it is usable immediately)."
+    Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
+}
 
 # Only computers in this group may retrieve the gMSA password. Using a group
 # rather than naming the host directly means adding a second web enrollment
 # server later requires no change to the account itself.
-$group = New-ADGroup -Name $GroupName -GroupScope Global -GroupCategory Security -Path $GroupPath -PassThru
-Write-Host "Created group $GroupName."
+$group = Get-ADGroup -Filter "Name -eq '$GroupName'"
+if ($group) {
+    Write-Host "Group $GroupName already exists."
+} else {
+    $group = New-ADGroup -Name $GroupName -GroupScope Global -GroupCategory Security -Path $GroupPath -PassThru
+    Write-Host "Created group $GroupName."
+}
 
-$webShort = $WebHost.Split('.')[0]
-Add-ADGroupMember -Identity $group -Members (Get-ADComputer -Identity $webShort)
-Write-Host "Added $webShort to $GroupName."
+$webShort    = $WebHost.Split('.')[0]
+$webComputer = Get-ADComputer -Identity $webShort
+$members     = @(Get-ADGroupMember -Identity $group | Select-Object -ExpandProperty distinguishedName)
+if ($members -contains $webComputer.DistinguishedName) {
+    Write-Host "$webShort is already in $GroupName."
+} else {
+    Add-ADGroupMember -Identity $group -Members $webComputer
+    Write-Host "Added $webShort to $GroupName."
+}
 
 # certsrv is reached over HTTP(S), so the account needs HTTP SPNs on both the
 # FQDN and the short name for Kerberos to succeed either way the client asks.
 # Moving these SPNs onto the gMSA is what makes useAppPoolCredentials necessary
 # on the IIS side.
-New-ADServiceAccount -Name $Name `
-    -DNSHostName $WebHost `
-    -Description 'Runs the AD CS web enrollment (/certsrv) IIS application pool' `
-    -PrincipalsAllowedToRetrieveManagedPassword $group `
-    -ServicePrincipalNames @("HTTP/$WebHost", "HTTP/$webShort") `
-    -KerberosEncryptionType AES128, AES256
-Write-Host "Created gMSA $Name."
+if (Get-ADServiceAccount -Filter "Name -eq '$Name'") {
+    Write-Host "gMSA $Name already exists - updating it."
+    Set-ADServiceAccount -Identity $Name `
+        -PrincipalsAllowedToRetrieveManagedPassword $group `
+        -ServicePrincipalNames @{ Replace = @("HTTP/$WebHost", "HTTP/$webShort") } `
+        -KerberosEncryptionType AES128, AES256
+} else {
+    New-ADServiceAccount -Name $Name `
+        -DNSHostName $WebHost `
+        -Description 'Runs the AD CS web enrollment (/certsrv) IIS application pool' `
+        -PrincipalsAllowedToRetrieveManagedPassword $group `
+        -ServicePrincipalNames @("HTTP/$WebHost", "HTTP/$webShort") `
+        -KerberosEncryptionType AES128, AES256
+    Write-Host "Created gMSA $Name."
+}
 
 # When /certsrv runs on the CA itself it submits over local RPC and needs no
 # delegation. Split across hosts it impersonates the caller to the CA, so it

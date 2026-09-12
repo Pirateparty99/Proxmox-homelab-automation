@@ -8,10 +8,9 @@
     Admins, after Install-AdcsCertificationAuthority.ps1 and
     New-AdcsWebEnrollmentGmsa.ps1.
 
-    Assumes a clean IIS with no /certsrv application, no HTTPS binding and no
-    dedicated application pool. It does not check for, or adapt to, existing
-    configuration - against a host already serving /certsrv it will fail rather
-    than reconfigure it.
+    Safe to re-run: existing IIS objects are reused. The http.sys certificate
+    binding is re-pointed each time, so a re-run picks up a newly enrolled
+    certificate.
 
 .NOTES
     The adcs-issuer POSTs to <url>/certfnsh.asp and parses the HTML reply, so
@@ -67,7 +66,11 @@ Import-Module WebAdministration
 # Installing the feature only puts the files on disk; this creates the /CertSrv
 # application under the Default Web Site.
 Write-Host "Configuring web enrollment..."
-Install-AdcsWebEnrollment -Force | Out-Null
+if (Test-Path 'IIS:\Sites\Default Web Site\CertSrv') {
+    Write-Host "/certsrv application already present."
+} else {
+    Install-AdcsWebEnrollment -Force | Out-Null
+}
 
 # ------------------------------------------------------------- TLS certificate
 
@@ -115,7 +118,16 @@ $enrolled = Get-Certificate -Template $Template `
 $cert = $enrolled.Certificate
 Write-Host "Enrolled $($cert.Thumbprint)."
 
-New-WebBinding -Name 'Default Web Site' -Protocol https -Port 443
+if (-not (Get-WebBinding -Name 'Default Web Site' -Protocol https -Port 443)) {
+    New-WebBinding -Name 'Default Web Site' -Protocol https -Port 443
+}
+# The http.sys SSL binding outlives the IIS web binding - removing the site
+# binding leaves the certificate mapping behind, and New-Item then fails with
+# "Cannot create a file when that file already exists". Re-pointing it is also
+# what makes a re-run pick up a newly enrolled certificate.
+if (Test-Path 'IIS:\SslBindings\0.0.0.0!443') {
+    Remove-Item -Path 'IIS:\SslBindings\0.0.0.0!443' -Force
+}
 New-Item -Path 'IIS:\SslBindings\0.0.0.0!443' -Value $cert | Out-Null
 Write-Host "Bound $($cert.Thumbprint) to 0.0.0.0:443."
 
@@ -124,7 +136,9 @@ Write-Host "Bound $($cert.Thumbprint) to 0.0.0.0:443."
 # /certsrv ships in DefaultAppPool. A dedicated pool means the gMSA identity
 # below applies to certsrv alone rather than every app on the site. certsrv is
 # classic ASP, so the pool has to be in Classic pipeline mode.
-New-WebAppPool -Name $AppPoolName | Out-Null
+if (-not (Test-Path "IIS:\AppPools\$AppPoolName")) {
+    New-WebAppPool -Name $AppPoolName | Out-Null
+}
 Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name managedPipelineMode -Value 'Classic'
 Set-ItemProperty 'IIS:\Sites\Default Web Site\CertSrv' -Name applicationPool -Value $AppPoolName
 

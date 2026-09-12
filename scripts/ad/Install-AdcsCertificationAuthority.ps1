@@ -8,9 +8,8 @@
     CA writes its enrollment object into the forest configuration partition, so
     Domain Admins alone is not enough).
 
-    Assumes a clean host with no CA on it. It does not check for, or adapt to,
-    an existing installation - against a host that already has a CA it will fail
-    rather than reconfigure one, which is the intended behaviour.
+    Safe to re-run: an existing CA is left alone rather than reconfigured,
+    because reconfiguring one invalidates everything it has issued.
 
 .NOTES
     The CA service (CertSvc) runs as LocalSystem on an Enterprise CA and does
@@ -179,6 +178,11 @@ Install-WindowsFeature -Name ADCS-Cert-Authority -IncludeManagementTools | Out-N
 
 Import-Module ADCSDeployment
 
+$configKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration'
+if (Test-Path $configKey) {
+    Write-Host ("A CA is already configured on this host: " + (Get-ItemProperty $configKey).Active)
+    Write-Host "Leaving it alone - reconfiguring would invalidate everything it has issued."
+} else {
 Write-Host "Configuring Enterprise Root CA '$CaName' ($KeyLength-bit, $HashAlgorithm, $ValidityYears years)..."
 Install-AdcsCertificationAuthority `
     -CAType EnterpriseRootCA `
@@ -189,6 +193,7 @@ Install-AdcsCertificationAuthority `
     -ValidityPeriod Years `
     -ValidityPeriodUnits $ValidityYears `
     -Force
+}
 
 Start-Service CertSvc
 

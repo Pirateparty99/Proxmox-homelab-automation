@@ -15,10 +15,8 @@
     purges the computer's Kerberos tickets instead, and only asks for a reboot
     if that was not enough.
 
-    THIS IS A ONE-SHOT, FROM-SCRATCH INSTALL. Every step assumes nothing it
-    creates already exists, so re-running after a partial failure will fail on
-    whatever the first run did create. Roll back to the snapshot the CA step
-    takes, and start again.
+    Safe to re-run. Each step creates only what is missing, so a chain that
+    failed part way can simply be run again.
 
 .NOTES
     The workstation half of the deployment is not run from here - it needs oc
@@ -111,13 +109,17 @@ foreach ($step in $steps) {
         Write-Banner "Gmsa - install on this host"
 
         Import-Module ActiveDirectory
-        Install-ADServiceAccount -Identity $GmsaName
 
-        # The computer only learns it is in the new retrieval group when it gets
-        # a fresh TGT. Purging the SYSTEM logon session's tickets forces that
-        # without a reboot. 0x3e7 is the well-known LUID for the computer account.
+        # Purge BEFORE installing, not after. The computer only learns it is in
+        # the new retrieval group when it gets a fresh TGT, and until it does
+        # Install-ADServiceAccount cannot read the password:
+        #     Install-ADServiceAccount : Cannot install service account.
+        #     Error Message: '{Access Denied}'
+        # 0x3e7 is the well-known LUID for the computer account.
         Write-Host "Purging the computer account's Kerberos tickets..."
         & klist.exe purge -li 0x3e7 | Out-Null
+
+        Install-ADServiceAccount -Identity $GmsaName
 
         if (-not (Test-ADServiceAccount -Identity $GmsaName)) {
             Write-Warning "Test-ADServiceAccount still fails for $GmsaName."

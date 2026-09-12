@@ -16,8 +16,9 @@
     create the account, and not written anywhere. The same password goes into the
     cluster later, when configure-clusterissuer.sh prompts for it.
 
-    Assumes the account does not exist yet, and fails rather than reconciling one
-    that does.
+    Safe to re-run: an existing account is left alone and only the template
+    rights are granted, so this is also the way to fix up an account created by
+    hand.
 
 .NOTES
     Granting Enroll is preferable to putting the account in Domain Admins, which
@@ -52,18 +53,22 @@ Import-Module ActiveDirectory
 
 # ------------------------------------------------------------------- account
 
-$password = Read-Host -AsSecureString "Password for $User"
-$domain   = (Get-ADDomain).DNSRoot
+if (Get-ADUser -Filter "SamAccountName -eq '$User'") {
+    Write-Host "$User already exists - leaving it alone, and granting Enroll below."
+} else {
+    $password = Read-Host -AsSecureString "Password for $User"
+    $domain   = (Get-ADDomain).DNSRoot
 
-New-ADUser -Name $User `
-    -SamAccountName $User `
-    -UserPrincipalName "$User@$domain" `
-    -Path $Path `
-    -AccountPassword $password `
-    -Description 'cert-manager adcs-issuer enrolment account' `
-    -Enabled $true `
-    -PasswordNeverExpires $true
-Write-Host "Created $User in $Path."
+    New-ADUser -Name $User `
+        -SamAccountName $User `
+        -UserPrincipalName "$User@$domain" `
+        -Path $Path `
+        -AccountPassword $password `
+        -Description 'cert-manager adcs-issuer enrolment account' `
+        -Enabled $true `
+        -PasswordNeverExpires $true
+    Write-Host "Created $User in $Path."
+}
 
 # --------------------------------------------------------------------- enroll
 

@@ -163,7 +163,10 @@ RBD_ARGS=(
   --set "secret.userID=${RBD_USER}" --set "secret.userKey=${RBD_KEY}"
   --set "storageClass.create=true" --set "storageClass.name=${SC_RBD}"
   --set "storageClass.clusterID=${FSID}" --set "storageClass.pool=${RBD_POOL}"
-  --set "storageClass.isDefault=${SC_RBD_DEFAULT}"
+  # The chart has no storageClass.isDefault - Helm ignores unknown --set keys
+  # silently, so that spelling never did anything and the cluster ended up with
+  # no default StorageClass at all. The default is an annotation on the object.
+  --set "storageClass.annotations.storageclass\.kubernetes\.io/is-default-class=${SC_RBD_DEFAULT}"
   --set "storageClass.allowVolumeExpansion=true"
   --set "provisioner.replicaCount=1"
 )

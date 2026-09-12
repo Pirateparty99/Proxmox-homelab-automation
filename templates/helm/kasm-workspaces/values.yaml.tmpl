@@ -170,7 +170,14 @@ kasmSecrets:
   # Helm will use that as the secret name. If `create=false` then you MUST provide the name of an existing Kasm Password
   # secret in your deployment namespace.
   #
-  name: "kasm-workspaces-password"
+  # Leave empty. The chart is inconsistent about this name: kasm-password-secret.yaml
+  # honours kasmSecrets.name, but the dbIsReady init container in _helpers.tpl
+  # hardcodes "<release>-secrets" for POSTGRES_PASSWORD. Setting a custom name
+  # creates the secret under it and leaves every pod's init container looking for
+  # a secret that does not exist:
+  #     Init:CreateContainerConfigError - secret "kasm-workspaces-secrets" not found
+  # Empty makes both paths agree on <release>-secrets.
+  name: ""
   passwords:
     manager-token: ""
     service-token: ""

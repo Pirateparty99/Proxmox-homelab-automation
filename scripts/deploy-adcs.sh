@@ -62,17 +62,33 @@ fi
 # live in this shell: lib/config.sh only reads secrets/pve-api-token.env when
 # the variable is unset, so an exported value wins - including one that
 # --recreate has since invalidated.
+_token_http() {
+  curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
+    -H "Authorization: PVEAPIToken=${PVE_API_TOKEN_ID}=${1}" \
+    "https://${PVE_API_HOST}:8006/api2/json/version" 2>/dev/null || echo 000
+}
+
 if (( ! DRY_RUN )); then
-  _code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
-    -H "Authorization: PVEAPIToken=${PVE_API_TOKEN_ID}=${PVE_API_TOKEN}" \
-    "https://${PVE_API_HOST}:8006/api2/json/version" 2>/dev/null || echo 000)
-  [[ "$_code" == "200" ]] || die "the Proxmox API rejected PVE_API_TOKEN (HTTP $_code).
-    If you have it exported in this shell, that beats secrets/pve-api-token.env:
-        unset PVE_API_TOKEN
-    Otherwise re-issue it:
-        scripts/proxmox/create-pve-api-token.sh --recreate"
+  _code=$(_token_http "$PVE_API_TOKEN")
+  if [[ "$_code" != "200" ]]; then
+    # An exported PVE_API_TOKEN beats the file by design, for one-off overrides.
+    # An override the API rejects is not worth honouring, though - and a stale
+    # export left over from before a --recreate is the usual reason we get here.
+    # Prefer the file if it holds something that actually works.
+    _file_token=$( . "$REPO_ROOT/secrets/pve-api-token.env" >/dev/null 2>&1; printf '%s' "${PVE_API_TOKEN:-}" )
+    if [[ -n "$_file_token" && "$_file_token" != "$PVE_API_TOKEN" && "$(_token_http "$_file_token")" == "200" ]]; then
+      export PVE_API_TOKEN="$_file_token"
+      printf '    the exported PVE_API_TOKEN was rejected (HTTP %s); using secrets/pve-api-token.env instead\n' "$_code"
+      printf '    run `unset PVE_API_TOKEN` to stop the stale one shadowing it\n'
+    else
+      die "the Proxmox API rejected PVE_API_TOKEN (HTTP $_code), and secrets/pve-api-token.env has nothing better.
+    Re-issue it:  scripts/proxmox/create-pve-api-token.sh --recreate"
+    fi
+    unset _file_token
+  else
+    printf '    proxmox token OK\n'
+  fi
   unset _code
-  printf '    proxmox token OK\n'
 fi
 
 echo "Testing ssh to DC01:"

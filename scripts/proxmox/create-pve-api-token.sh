@@ -190,11 +190,15 @@ for r in rows:
 # ------------------------------------------------------------------------ next
 log "Next"
 cat <<EOF
-    Export the secret, then run the deployment:
+    The secret is in $TOKEN_ENV_FILE and lib/config.sh sources it, so
+    nothing needs exporting. Just run:
 
-      export PVE_API_TOKEN='<secret printed above>'
       scripts/deploy-adcs.sh --dry-run      # then without --dry-run
 
-    Or, running on the CA host by hand, set \$env:PVE_API_TOKEN there instead
-    and let Install-AdcsChain.ps1 pick it up.
+    Do NOT export PVE_API_TOKEN by hand: an exported value beats the file, so
+    one left over from a previous token survives a --recreate and everything
+    then fails with 401.
+
+    Running on the CA host by hand instead? Set \$env:PVE_API_TOKEN there and
+    Install-AdcsChain.ps1 picks it up.
 EOF

@@ -959,7 +959,12 @@ extraObjects: []
 # configuration settings. 
 #
 kasmConfig:
-  generatePreseed: false
+  # true so kasmConfig.config below is merged into the seed file. NOTE: the seed
+  # is only applied when db-init initialises an EMPTY database. Against a
+  # database that already exists it reports "DB already initialized" and skips,
+  # so changing anything under kasmConfig.config has no effect until the DB PVC
+  # is recreated - or you make the same change in the Kasm admin UI.
+  generatePreseed: true
   defaultUsers: false
   defaultApiUsers: false
   adminUsername: "admin@kasm.local"
@@ -979,4 +984,25 @@ kasmConfig:
   # [Preseed Documentation](./docs/preseed.md) and to the [Kasm Slip-Stream Install](https://docs.kasm.com/docs/1.19.0/how-to/administration/import-export/slipstream-install)
   # documentation for additional details.
   #
-  config: {}
+  config:
+    # Authenticate users against AD over LDAP. Only members of KASM_LDAP_GROUP_DN
+    # may sign in; auto_create_app_user creates the Kasm user on first successful
+    # login so accounts do not have to be provisioned by hand.
+    #
+    # The bind password is NOT here - existingSecret points at a Kubernetes Secret
+    # created by scripts/helm/kasm-workspaces/configure-kasm-ldap.sh, so it stays
+    # out of values.yaml and out of git.
+    ldapConfigs:
+      - name: {{ KASM_LDAP_NAME | required("KASM_LDAP_NAME") | tojson }}
+        url: {{ KASM_LDAP_URL | required("KASM_LDAP_URL") | tojson }}
+        search_base: {{ AD_BASE_DN | required("AD_BASE_DN") | tojson }}
+        # Kasm matches the username itself; this narrows what it searches.
+        search_filter: "(objectClass=user)"
+        group_membership_filter: {{ ("(memberOf=" ~ KASM_LDAP_GROUP_DN ~ ")") | tojson }}
+        service_account_dn: {{ AD_BIND_DN | required("AD_BIND_DN") | tojson }}
+        existingSecret: {{ KASM_LDAP_SECRET | required("KASM_LDAP_SECRET") | tojson }}
+        existingSecretKey: "password"
+        email_attribute: "mail"
+        auto_create_app_user: true
+        search_subtree: true
+        enabled: true

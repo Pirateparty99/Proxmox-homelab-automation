@@ -121,6 +121,10 @@ def derive(cfg):
     default("ADCS_URL", "https://%s/certsrv" % cfg.get("ADCS_HOST", ""))
     # OKD puts the API on api.<base domain>:6443.
     default("OKD_API_URL", "https://api.%s:6443" % cfg.get("OKD_BASE_DOMAIN", ""))
+    # 636 is LDAPS, 389 plain - the scheme has to follow the port.
+    default("KASM_LDAP_URL", "%s://%s:%s" % (
+        "ldaps" if str(cfg.get("AD_DC_PORT", "")) == "636" else "ldap",
+        cfg.get("AD_DC_HOST", ""), cfg.get("AD_DC_PORT", "")))
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))
     # Same login, different node: PVE_API_HOST is whichever node hosts the DC VM,

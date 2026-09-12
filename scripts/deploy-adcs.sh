@@ -140,7 +140,16 @@ if (( DRY_RUN )); then
 else
   ENCODED=$(printf '%s' "$REMOTE_PS" | python3 -c \
     "import sys,base64;sys.stdout.write(base64.b64encode(sys.stdin.read().encode('utf-16-le')).decode())")
-  ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+  # -tt forces a pseudo-terminal. The chain prompts - New-AdcsEnrollmentAccount.ps1
+  # asks for the new account's password - and Read-Host with no tty blocks
+  # forever rather than failing, which looks exactly like a hang. Forcing one
+  # (rather than -t, which silently gives up when stdin is not a terminal) means
+  # the prompt reaches you when run from a terminal, and returns EOF and fails
+  # promptly when it is not.
+  #
+  # The password is typed straight into the remote prompt: it is not read here,
+  # not put in the encoded command, and not stored.
+  ssh -tt -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
       powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$ENCODED"
 fi
 

@@ -959,12 +959,21 @@ extraObjects: []
 # configuration settings. 
 #
 kasmConfig:
-  # true so kasmConfig.config below is merged into the seed file. NOTE: the seed
-  # is only applied when db-init initialises an EMPTY database. Against a
-  # database that already exists it reports "DB already initialized" and skips,
-  # so changing anything under kasmConfig.config has no effect until the DB PVC
-  # is recreated - or you make the same change in the Kasm admin UI.
-  generatePreseed: true
+  # FALSE on OpenShift. Enabling it adds a prepare-db-preseed init container to
+  # the db-init Job with runAsUser: 1000 hardcoded in templates/db-init-job.yaml
+  # - no values key overrides it. restricted-v2 gives each namespace its own UID
+  # range and rejects 1000, so the Job cannot create a pod at all and nothing
+  # initialises the schema:
+  #   pods "kasm-workspaces-db-init-" is forbidden: ... runAsUser: Invalid value: 1000
+  # Granting a laxer SCC does not help: the Job uses the namespace default
+  # ServiceAccount (the chart exposes no serviceAccountName), so any SCC wide
+  # enough for 1000 applies to every pod here - and under nonroot-v2 OpenShift
+  # stops injecting a UID, which then breaks trusted-ca-init instead:
+  #   container has runAsNonRoot and image has non-numeric user (kasm)
+  #
+  # So everything under kasmConfig.config below is INERT. Configure LDAP in the
+  # Kasm admin UI using those values, or enable this on a non-OpenShift cluster.
+  generatePreseed: false
   defaultUsers: false
   defaultApiUsers: false
   adminUsername: "admin@kasm.local"

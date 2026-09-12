@@ -88,7 +88,11 @@ timeout 5 bash -c "echo > /dev/tcp/${SSH_HOST}/22" 2>/dev/null \
 # Removing dest first makes the copy create it, which is the only case scp
 # handles the way you would expect.
 [[ -n "$DEST" && "$DEST" != "/" && "$DEST" != "." ]] || die "refusing to remove remote path '$DEST'"
-run "ssh -o BatchMode=yes '${SSH_USER}@${SSH_HOST}' powershell -NoProfile -Command \"Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '${DEST}'\""
+# The trailing `exit 0` matters: powershell.exe exits 1 when the last command
+# set $? false, and Remove-Item on a path that does not exist does exactly that
+# even under -ErrorAction SilentlyContinue. Without it, set -e kills this script
+# on the very first run, when there is nothing to remove yet.
+run "ssh -o BatchMode=yes '${SSH_USER}@${SSH_HOST}' powershell -NoProfile -Command \"Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '${DEST}'; exit 0\""
 run "scp -r '$BUNDLE' '${SSH_USER}@${SSH_HOST}:${DEST}'"
 
 log "Next"

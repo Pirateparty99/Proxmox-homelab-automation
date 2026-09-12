@@ -136,9 +136,14 @@ def derive(cfg):
     # Read the CA in here so the certificate itself never has to live in a
     # template. Absent is not fatal - templates guard on it.
     cfg["ADCS_CA_BUNDLE_B64"] = ""
+    cfg["ADCS_CA_BUNDLE_PEM"] = ""
     if ca and os.path.isfile(ca):
         with open(ca, "rb") as fh:
-            cfg["ADCS_CA_BUNDLE_B64"] = base64.b64encode(fh.read()).decode("ascii")
+            raw = fh.read()
+        cfg["ADCS_CA_BUNDLE_B64"] = base64.b64encode(raw).decode("ascii")
+        # Charts that want the certificate inline (rather than base64) take the
+        # PEM as-is; trailing newline stripped so templates control indentation.
+        cfg["ADCS_CA_BUNDLE_PEM"] = raw.decode("ascii").strip()
 
     # Scripts run from a workstation, so the kubeconfig lives wherever the user
     # keeps it. Expand ~ here: --export shell-quotes values, so a literal tilde

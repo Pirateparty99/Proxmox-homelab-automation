@@ -139,8 +139,13 @@ certificate:
 # You can either pre-create the configmap containing the CA bundle, or have the Helm chart create it for you.
 # To have the Helm chart create the configmap, provide the CA bundle data in PEM format in the `caBundle` field.
 #
+# Kasm's containers do not trust the internal CA by default, so the certificate
+# cert-manager issues them is unverifiable to anything that checks it. Feeding
+# the AD root in here is what makes the issued certificate actually usable
+# inside the deployment. The PEM comes from AD_CA_CERT_FILE at render time, so
+# it is never committed - re-export it whenever the CA is rebuilt.
 trustedCaBundle:
-  enabled: false
+  enabled: true
   # trustedCaBundle.configmapName -- The name of the Kubernetes configmap where the CA bundle is stored.
   # If you are populating the trustedCaBundle.caCerts field, you can leave this blank, if you pre-created
   # the configmap, you MUST provide the name here.
@@ -150,7 +155,9 @@ trustedCaBundle:
   # can paste your PEM-formatted CA certificates in a key-value format where the key is the file name and the value
   # is the PEM-formatted certificate data. All keys MUST end with a `.crt` extension.
   #
-  caCerts: {}
+  caCerts:
+    {{ ADCS_CA_NAME | lower }}.crt: |-
+{{ ADCS_CA_BUNDLE_PEM | required("ADCS_CA_BUNDLE_PEM - is AD_CA_CERT_FILE present?") | indent(6, True) }}
   # Example CA Certs configuration
   # ca-cert-1.crt: |-
   #   -----BEGIN CERTIFICATE-----

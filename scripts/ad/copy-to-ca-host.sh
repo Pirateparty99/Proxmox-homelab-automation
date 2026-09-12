@@ -82,18 +82,20 @@ log "Copying to $SSH_USER@$SSH_HOST:$DEST"
 timeout 5 bash -c "echo > /dev/tcp/${SSH_HOST}/22" 2>/dev/null \
   || die "nothing listening on ${SSH_HOST}:22 - install the OpenSSH server on the CA host, or use --zip"
 
-# scp -r copies the directory INTO dest when dest already exists, so a second
-# run lands the bundle at <dest>/ad/ and leaves the stale copy at <dest>/ in
-# place - the CA host then keeps running whatever was copied the first time.
-# Removing dest first makes the copy create it, which is the only case scp
-# handles the way you would expect.
-[[ -n "$DEST" && "$DEST" != "/" && "$DEST" != "." ]] || die "refusing to remove remote path '$DEST'"
-# The trailing `exit 0` matters: powershell.exe exits 1 when the last command
-# set $? false, and Remove-Item on a path that does not exist does exactly that
-# even under -ErrorAction SilentlyContinue. Without it, set -e kills this script
-# on the very first run, when there is nothing to remove yet.
-run "ssh -o BatchMode=yes '${SSH_USER}@${SSH_HOST}' powershell -NoProfile -Command \"Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '${DEST}'; exit 0\""
-run "scp -r '$BUNDLE' '${SSH_USER}@${SSH_HOST}:${DEST}'"
+# Copy the bundle's CONTENTS, not the directory. `scp -r <dir> host:<dest>`
+# puts <dir> INSIDE <dest> when <dest> already exists, so repeat runs nest at
+# <dest>/ad/ and the CA host keeps running the first copy. Deleting <dest>
+# first is not a reliable way round that: Windows will not remove a directory
+# that is some process's working directory, so a shell sitting in it makes the
+# delete fail and the next copy nest anyway.
+#
+# Copying file-by-file into <dest> cannot nest, and overwrites in place.
+[[ -n "$DEST" ]] || die "DEST is empty"
+# No pipe or semicolon in the remote command: the CA host's default ssh shell is
+# cmd.exe, which consumes them before powershell ever sees them. Output is
+# discarded locally instead.
+run "ssh -o BatchMode=yes '${SSH_USER}@${SSH_HOST}' powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path '${DEST}'\" >/dev/null"
+run "scp '$BUNDLE'/* '${SSH_USER}@${SSH_HOST}:${DEST}/'"
 
 log "Next"
 cat <<EOF

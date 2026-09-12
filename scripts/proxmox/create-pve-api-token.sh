@@ -108,12 +108,27 @@ if has_row "pveum user token list '$TOKEN_USER' --output-format json" \
 fi
 
 if (( TOKEN_EXISTS && ! RECREATE )); then
-  # Proxmox shows the secret only at creation, so there is nothing useful to do
-  # with an existing token here - and silently recreating it would invalidate a
-  # secret that may already be deployed.
-  info "already exists - not touching it"
-  info "the secret cannot be read back; re-run with --recreate to issue a new one"
-  info "(that immediately invalidates the current secret)"
+  # Proxmox shows the secret only at creation, so an existing token is only
+  # usable if that secret was captured at the time. Silently recreating it would
+  # invalidate one that may already be deployed, so that stays opt-in - but a
+  # token with no local secret is a dead end, and saying "already exists" would
+  # let the caller get two steps further before finding out.
+  if [[ -f "$TOKEN_ENV_FILE" ]]; then
+    info "already exists, and its secret is in $TOKEN_ENV_FILE - nothing to do"
+  elif (( DRY_RUN )); then
+    info "already exists, but $TOKEN_ENV_FILE is missing - a real run would stop here"
+  else
+    die "token '$PVE_API_TOKEN_ID' exists on Proxmox, but $TOKEN_ENV_FILE does not.
+    Proxmox shows a token secret once, at creation, and cannot show it again, so
+    this token cannot be used from here.
+
+    Re-issue it:   $0 --recreate
+
+    That invalidates the current secret. Safe unless you have already deployed
+    it somewhere - if you still have it, write it there by hand instead:
+        install -m 600 /dev/null '$TOKEN_ENV_FILE'
+        printf 'export PVE_API_TOKEN=%s\\n' '<secret>' >> '$TOKEN_ENV_FILE'"
+  fi
 elif (( TOKEN_EXISTS && RECREATE )); then
   log "Recreating token - the previous secret stops working now"
   run "pveum user token remove '$TOKEN_USER' '$TOKEN_NAME'"

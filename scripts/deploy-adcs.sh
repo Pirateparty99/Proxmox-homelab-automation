@@ -54,6 +54,27 @@ if [[ -z "${PVE_API_TOKEN:-}" && -f "$REPO_ROOT/secrets/pve-api-token.env" ]]; t
 fi
 (( DRY_RUN )) || : "${PVE_API_TOKEN:?still unset - create-pve-api-token.sh did not write secrets/pve-api-token.env. If the token already existed, its secret cannot be read back: re-run that script with --recreate}"
 
+# Check it actually authenticates before sending it to the CA host. Without
+# this the first sign of a bad token is a 401 from inside the snapshot call on
+# the DC, several screens into step 2.
+#
+# The likeliest cause of a stale one is an old `export PVE_API_TOKEN=...` still
+# live in this shell: lib/config.sh only reads secrets/pve-api-token.env when
+# the variable is unset, so an exported value wins - including one that
+# --recreate has since invalidated.
+if (( ! DRY_RUN )); then
+  _code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
+    -H "Authorization: PVEAPIToken=${PVE_API_TOKEN_ID}=${PVE_API_TOKEN}" \
+    "https://${PVE_API_HOST}:8006/api2/json/version" 2>/dev/null || echo 000)
+  [[ "$_code" == "200" ]] || die "the Proxmox API rejected PVE_API_TOKEN (HTTP $_code).
+    If you have it exported in this shell, that beats secrets/pve-api-token.env:
+        unset PVE_API_TOKEN
+    Otherwise re-issue it:
+        scripts/proxmox/create-pve-api-token.sh --recreate"
+  unset _code
+  printf '    proxmox token OK\n'
+fi
+
 echo "Testing ssh to DC01:"
 ssh -o BatchMode=yes -o ConnectTimeout=8 "${SSH_USER}@${SSH_HOST}" exit 2>/dev/null \
   || die "no key-based ssh to ${SSH_USER}@${SSH_HOST} - run scripts/ad/authorize-ssh-key.sh"
@@ -87,9 +108,17 @@ log "2/4  Running Install-AdcsChain.ps1 on $SSH_HOST"
 # keeps it off the remote command line in plain text - it is still recoverable
 # by anyone who can read that process list, so treat the token as exposed to
 # administrators of the CA host, which it already is.
-REMOTE_PS="\$env:PVE_API_TOKEN = '${PVE_API_TOKEN}'
+# powershell.exe serialises its warning/error/information streams as CLIXML on
+# stderr when it is not attached to a host, which is unreadable over ssh.
+# Merging every stream into the success stream and stringifying it gives plain
+# text on stdout; the try/catch keeps a failure a non-zero exit rather than
+# something swallowed by the merge.
+REMOTE_PS="\$ErrorActionPreference = 'Stop'
+\$ProgressPreference = 'SilentlyContinue'
+\$env:PVE_API_TOKEN = '${PVE_API_TOKEN}'
 Set-Location '${REMOTE_DIR}'
-.\\Install-AdcsChain.ps1"
+try { .\\Install-AdcsChain.ps1 *>&1 | ForEach-Object { \"\$_\" } }
+catch { Write-Output ('ERROR: ' + \$_.Exception.Message); exit 1 }"
 if (( DRY_RUN )); then
   printf '    [dry-run] ssh %s@%s powershell -EncodedCommand <chain, token redacted>\n' "$SSH_USER" "$SSH_HOST"
 else

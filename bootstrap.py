@@ -66,7 +66,7 @@ CREDENTIALS = [
      "file": "secrets/pve-api-token.env"},
     {"desc": "OKD kubeconfig, from a non-expiring ServiceAccount token",
      "script": "scripts/okd/create-oc-token.sh",
-     "file": "secrets/okd-kubeconfig"},
+     "check": "oc"},
 ]
 
 
@@ -113,6 +113,7 @@ def derive(cfg):
     base_ou = cfg["AD_BASE_OU"]
     default("AD_BASE_DN", "%s,%s" % (base_ou, cfg["AD_DOMAIN_DN"]) if base_ou else cfg["AD_DOMAIN_DN"])
     default("AD_GROUP_BASE_DN", "OU=Groups,%s" % cfg["AD_BASE_DN"])
+    default("AD_SERVICE_ACCOUNT_DN", "OU=Service Accounts,%s" % cfg["AD_BASE_DN"])
     default("AD_BIND_DN", "CN=%s,OU=Service Accounts,%s"
                           % (cfg.get("AD_BIND_USER", "ldap.svc"), cfg["AD_BASE_DN"]))
 
@@ -237,14 +238,34 @@ def _ssh_works(cfg):
         return False
 
 
+def _oc_works():
+    """Whether the generated kubeconfig actually authenticates. Checking only
+    that the file exists is not enough - a kubeconfig can be present and stale,
+    or reference a CA that has since been removed."""
+    path = os.path.join(REPO_ROOT, "secrets", "okd-kubeconfig")
+    if not os.path.isfile(path):
+        return False
+    env = dict(os.environ, KUBECONFIG=path)
+    try:
+        with open(os.devnull, "w") as null:
+            return subprocess.call(["oc", "whoami"], env=env, stdout=null, stderr=null) == 0
+    except OSError:
+        return False
+
+
+CHECKS = {"ssh": lambda cfg: _ssh_works(cfg), "oc": lambda cfg: _oc_works()}
+
+
 def credential_status(cfg):
     """(credential, present, label) for each, where label names what was tested."""
     out = []
     for cred in CREDENTIALS:
         if "file" in cred:
             out.append((cred, os.path.isfile(os.path.join(REPO_ROOT, cred["file"])), cred["file"]))
+        elif cred["check"] == "ssh":
+            out.append((cred, CHECKS["ssh"](cfg), "ssh to %s" % cfg.get("ADCS_HOST", "")))
         else:
-            out.append((cred, _ssh_works(cfg), "ssh to %s" % cfg.get("ADCS_HOST", "")))
+            out.append((cred, CHECKS["oc"](cfg), "oc via secrets/okd-kubeconfig"))
     return out
 
 

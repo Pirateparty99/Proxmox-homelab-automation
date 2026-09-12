@@ -215,8 +215,15 @@ between:
 | # | Script | Does |
 | --- | --- | --- |
 | 1 | `Install-AdcsCertificationAuthority.ps1` | snapshot, AD CS role, Enterprise CA |
-| 2 | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
-| 3 | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
+| 2 | `New-AdcsEnrollmentAccount.ps1` | the account cert-manager enrols as, plus Enroll on the template |
+| 3 | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
+| 4 | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
+
+Step 2 prompts for the new account's password — use the same one when
+`configure-clusterissuer.sh` asks for it later. Creating the account is only half
+of it: the CA refuses requests from a principal without **Enroll** on the
+template, and the stock `WebServer` template grants that to Domain Admins and
+Enterprise Admins only.
 
 Run as Enterprise Admins — step 2 alone would only need Domain Admins.
 

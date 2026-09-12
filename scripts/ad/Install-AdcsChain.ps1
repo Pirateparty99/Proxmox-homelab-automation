@@ -68,6 +68,10 @@ $steps = @(
        Script = 'Install-AdcsCertificationAuthority.ps1'
        Args = @{ ConfigFile = $ConfigFile; SnapshotFirst = $SnapshotFirst }
        Title = 'AD CS role and Enterprise Root CA' }
+    @{ Name = 'EnrollAccount'
+       Script = 'New-AdcsEnrollmentAccount.ps1'
+       Args = @{ ConfigFile = $ConfigFile }
+       Title = 'Enrolment account, and its Enroll right on the template' }
     @{ Name = 'Gmsa'
        Script = 'New-AdcsWebEnrollmentGmsa.ps1'
        Args = @{ ConfigFile = $ConfigFile }

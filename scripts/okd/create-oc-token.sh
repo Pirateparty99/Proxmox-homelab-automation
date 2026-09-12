@@ -62,7 +62,14 @@ SERVER="${OKD_API_URL:?set OKD_BASE_DOMAIN in config.env}"
 #     error: tls: failed to verify certificate: x509: certificate signed by
 #     unknown authority
 # Both are self-signed roots served as the last cert in their own chain.
-CA=$(mktemp); trap 'rm -f "$CA"' EXIT
+#
+# This is written to secrets/, NOT a temp file: `oc login --certificate-authority`
+# records the PATH in ~/.kube/config rather than embedding the certificate, so a
+# temp file that is cleaned up leaves the user's kubeconfig pointing at nothing:
+#     error: unable to read certificate-authority /tmp/tmp.XXXX ... no such file
+CA="${OKD_CA_FILE:-$REPO_ROOT/secrets/okd-ca.crt}"
+mkdir -p "$(dirname "$CA")"
+: > "$CA"
 
 # extract_root <host:port> [servername] - append that endpoint's self-signed
 # root to $CA.

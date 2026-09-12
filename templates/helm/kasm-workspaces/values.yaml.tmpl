@@ -178,12 +178,17 @@ kasmSecrets:
   #     Init:CreateContainerConfigError - secret "kasm-workspaces-secrets" not found
   # Empty makes both paths agree on <release>-secrets.
   name: ""
+  # Empty values make the chart generate random ones per install. Fixed values
+  # keep a reinstall reproducible - which matters because Postgres only applies
+  # POSTGRES_PASSWORD when it initialises an empty data directory, so a password
+  # that changes underneath an existing PVC locks the deployment out of its own
+  # database. Set KASM_DEFAULT_PASSWORD in config.env.
   passwords:
-    manager-token: ""
-    service-token: ""
-    db-password: ""
-    admin-password: ""
-    user-password: ""
+    manager-token: {{ KASM_DEFAULT_PASSWORD | required("KASM_DEFAULT_PASSWORD") | tojson }}
+    service-token: {{ KASM_DEFAULT_PASSWORD | required("KASM_DEFAULT_PASSWORD") | tojson }}
+    db-password: {{ KASM_DEFAULT_PASSWORD | required("KASM_DEFAULT_PASSWORD") | tojson }}
+    admin-password: {{ KASM_DEFAULT_PASSWORD | required("KASM_DEFAULT_PASSWORD") | tojson }}
+    user-password: {{ KASM_DEFAULT_PASSWORD | required("KASM_DEFAULT_PASSWORD") | tojson }}
   annotations: {}
   labels: {}
 

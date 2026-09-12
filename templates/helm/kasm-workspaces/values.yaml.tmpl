@@ -1004,7 +1004,7 @@ kasmConfig:
         service_account_dn: {{ AD_BIND_DN | required("AD_BIND_DN") | tojson }}
         existingSecret: {{ KASM_LDAP_SECRET | required("KASM_LDAP_SECRET") | tojson }}
         existingSecretKey: "password"
-        email_attribute: "mail"
+        email_attribute: {{ KASM_LDAP_EMAIL_ATTRIBUTE | required("KASM_LDAP_EMAIL_ATTRIBUTE") | tojson }}
         auto_create_app_user: true
         search_subtree: true
         enabled: true

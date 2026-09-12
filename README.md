@@ -258,7 +258,9 @@ report ready. `SKIP_PREFLIGHT=1` bypasses the check.
 
 `New-AdcsCesGmsa.ps1` is separate and optional — CES (`ADCS-Enroll-Web-Svc`) is a
 different role service, for clients that enrol over the WS-Trust API. The
-adcs-issuer does not use it.
+adcs-issuer does not use it, and it is deliberately not in the chain: it claims
+the same `HTTP/<host>` SPNs as the web enrollment gMSA, and an SPN belongs to one
+principal forest-wide, so running both against one host fails the second.
 
 ## Notes
 

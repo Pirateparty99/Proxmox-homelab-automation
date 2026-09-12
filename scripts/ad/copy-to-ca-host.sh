@@ -82,8 +82,13 @@ log "Copying to $SSH_USER@$SSH_HOST:$DEST"
 timeout 5 bash -c "echo > /dev/tcp/${SSH_HOST}/22" 2>/dev/null \
   || die "nothing listening on ${SSH_HOST}:22 - install the OpenSSH server on the CA host, or use --zip"
 
-# -r on the directory itself so the remote ends up with <dest>/ containing the
-# files, rather than the files scattered into the parent.
+# scp -r copies the directory INTO dest when dest already exists, so a second
+# run lands the bundle at <dest>/ad/ and leaves the stale copy at <dest>/ in
+# place - the CA host then keeps running whatever was copied the first time.
+# Removing dest first makes the copy create it, which is the only case scp
+# handles the way you would expect.
+[[ -n "$DEST" && "$DEST" != "/" && "$DEST" != "." ]] || die "refusing to remove remote path '$DEST'"
+run "ssh -o BatchMode=yes '${SSH_USER}@${SSH_HOST}' powershell -NoProfile -Command \"Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '${DEST}'\""
 run "scp -r '$BUNDLE' '${SSH_USER}@${SSH_HOST}:${DEST}'"
 
 log "Next"

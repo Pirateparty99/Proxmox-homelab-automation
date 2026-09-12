@@ -39,9 +39,15 @@ $EDITOR config.env                    # set AD_DOMAIN and the site values
 Export the AD root CA to wherever `AD_CA_CERT_FILE` points:
 
 ```bash
-certutil -ca.cert ca.cer                                   # on the CA
-openssl x509 -inform der -in ca.cer -out secrets/ad-ca.crt
+# on the CA, as one line - print the root CA certificate as base64
+powershell -NoProfile -Command "[Convert]::ToBase64String((Get-ChildItem Cert:\LocalMachine\Root | Where-Object Subject -match 'CN=Your-CA').RawData)"
+# then locally
+base64 -d < ca.b64 > ca.der && openssl x509 -inform der -in ca.der -out secrets/ad-ca.crt
 ```
+
+Re-export this whenever the CA is rebuilt: the root changes, and the issuer's
+`caBundle` is generated from this file. A stale one shows up as
+`curl exit 60` in the `configure-clusterissuer.sh` preflight.
 
 ## Usage
 

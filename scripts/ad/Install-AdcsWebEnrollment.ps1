@@ -179,13 +179,15 @@ if ($UseGmsa -and $GmsaName) {
 
 # Negotiate first so Kerberos is preferred; NTLM stays as the fallback the
 # adcs-issuer uses if it cannot get a ticket.
-Clear-WebConfiguration -PSPath 'IIS:\' -Location $app `
-    -Filter '/system.webServer/security/authentication/windowsAuthentication/providers'
-foreach ($provider in @('Negotiate', 'NTLM')) {
-    Add-WebConfiguration -PSPath 'IIS:\' -Location $app `
-        -Filter '/system.webServer/security/authentication/windowsAuthentication/providers' `
-        -Value $provider
-}
+#
+# Set the whole collection rather than clearing it and adding entries back:
+# clearing removes only this location's entries, after which the parent's
+# providers are inherited again, so the adds collide with what came back -
+#   Cannot add duplicate collection entry of type 'add' with unique key
+#   attribute 'value' set to 'Negotiate'
+Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $app `
+    -Filter '/system.webServer/security/authentication/windowsAuthentication/providers' `
+    -Name '.' -Value @(@{ value = 'Negotiate' }, @{ value = 'NTLM' })
 
 Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $app `
     -Filter '/system.webServer/security/access' -Name sslFlags -Value 'Ssl'

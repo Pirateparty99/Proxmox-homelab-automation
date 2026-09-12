@@ -71,9 +71,42 @@ Install-AdcsWebEnrollment -Force | Out-Null
 
 # ------------------------------------------------------------- TLS certificate
 
-# Enrols as the computer account, so the template must grant it Enroll. The
-# stock WebServer template grants Enroll to admins only, so this is the step
-# most likely to fail on a fresh CA.
+# Requesting into LocalMachine\My submits as the computer account, and a stock
+# template grants Enroll to Domain Admins and Enterprise Admins only - both
+# user principals. A machine request is therefore refused outright:
+#
+#     CertEnroll::CX509Enrollment::Enroll: You do not have permission to request
+#     this type of certificate. 0x80094012 (CERTSRV_E_TEMPLATE_DENIED)
+#
+# So grant this host's computer account Read + Enroll on the template first.
+# Scoped to this one machine account rather than Domain Computers.
+Import-Module ActiveDirectory
+$ENROLL_RIGHT = [guid]'0e10c968-78fb-11d2-90d4-00c04f79dc55'
+$templateDN = "CN=$Template,CN=Certificate Templates,CN=Public Key Services,CN=Services," +
+              (Get-ADRootDSE).configurationNamingContext
+if (-not (Test-Path "AD:$templateDN")) {
+    throw "Certificate template '$Template' not found at $templateDN."
+}
+
+$machineSid = (Get-ADComputer -Identity $env:COMPUTERNAME).SID
+$templateAcl = Get-Acl -Path "AD:$templateDN"
+$templateAcl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+    $machineSid,
+    [System.DirectoryServices.ActiveDirectoryRights]::GenericRead,
+    [System.Security.AccessControl.AccessControlType]::Allow)))
+$templateAcl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+    $machineSid,
+    [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
+    [System.Security.AccessControl.AccessControlType]::Allow,
+    $ENROLL_RIGHT)))
+Set-Acl -Path "AD:$templateDN" -AclObject $templateAcl
+Write-Host "Granted $env:COMPUTERNAME`$ Read + Enroll on the '$Template' template."
+
+# The CA caches template definitions; re-reading them picks the new ACE up
+# without waiting for its own refresh interval.
+& certutil.exe -pulse | Out-Null
+Start-Sleep -Seconds 5
+
 Write-Host "Enrolling a '$Template' certificate for $WebHost..."
 $enrolled = Get-Certificate -Template $Template `
                             -SubjectName "CN=$WebHost" `

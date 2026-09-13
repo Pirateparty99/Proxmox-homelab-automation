@@ -54,3 +54,37 @@ unset _cfg_kubeconfig
 render_templates() {
     python3 "$REPO_ROOT/bootstrap.py" "$@"
 }
+
+# chart_args <chart> - the helm arguments naming a chart, preferring the local
+# cache. Echoes either a path to a cached .tgz, or the upstream reference plus
+# the flags that reach it. Split it into an array, because a classic repo needs
+# several words:
+#
+#   read -ra CHART <<< "$(chart_args cert-manager)"
+#   helm upgrade --install cert-manager "${CHART[@]}" -n cert-manager -f values.yaml
+#
+# A cached chart carries its version in the filename, so no --version is added;
+# that is what makes a cached deploy reproducible regardless of what upstream
+# has moved on to. Populate the cache with scripts/helm/pull-charts.sh.
+chart_args() {
+    local chart="$1" cached row source version
+    cached=$(ls -t "${CHART_CACHE}/${chart}"-*.tgz 2>/dev/null | head -1)
+    if [[ -n "$cached" ]]; then
+        printf '%s\n' "$cached"
+        return 0
+    fi
+    row=$(python3 "$REPO_ROOT/bootstrap.py" --charts | awk -F'\t' -v c="$chart" '$1 == c {print; exit}')
+    if [[ -z "$row" ]]; then
+        echo "chart_args: no chart named '$chart' in bootstrap.py HELM_CHARTS" >&2
+        return 1
+    fi
+    source=$(printf '%s' "$row" | cut -f2)
+    version=$(printf '%s' "$row" | cut -f3)
+    if [[ "$source" == oci://* ]]; then
+        printf '%s' "$source"
+    else
+        printf '%s --repo %s' "$chart" "$source"
+    fi
+    [[ -n "$version" ]] && printf ' --version %s' "$version"
+    printf '\n'
+}

@@ -11,10 +11,11 @@ render_templates --quiet
 VALUES="$RENDER_DIR/helm/certificate-manager/cert-man-values.yaml"
 
 echo "Installing Cert Manager version $CERT_MANAGER_VERSION with Helm:"
-helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
+# Local cache when populated, upstream otherwise - see chart_args in lib/config.sh.
+read -ra CHART <<< "$(chart_args cert-manager)"
+helm upgrade --install cert-manager "${CHART[@]}" \
   --namespace cert-manager \
   --create-namespace \
-  --version "$CERT_MANAGER_VERSION" \
   --set installCRDs=true \
   --values "$VALUES" 
 

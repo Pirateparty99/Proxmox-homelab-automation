@@ -17,15 +17,15 @@ ISSUER_VERSION="${ISSUER_VERSION:-${ADCS_ISSUER_VERSION:-}}"
 render_templates --quiet
 VALUES="$RENDER_DIR/helm/certificate-manager/adcs-issuer-values.yaml"
 
-helm repo add djkormo-adcs-issuer https://djkormo.github.io/adcs-issuer/
-helm repo update djkormo-adcs-issuer
+# chart_args uses the cached chart when there is one, and otherwise passes
+# --repo directly - either way nothing is added to the user's helm repo list.
+read -ra CHART <<< "$(chart_args adcs-issuer)"
 
 # No --set installCRDs=true: that key belongs to cert-manager, not this chart, so
 # helm silently ignored it. CRDs are controlled by crd.install in the values file.
-helm upgrade --install adcs-issuer djkormo-adcs-issuer/adcs-issuer \
+helm upgrade --install adcs-issuer "${CHART[@]}" \
   --namespace "$ADCS_NAMESPACE" \
   --create-namespace \
-  --version "$ISSUER_VERSION" \
   --values "$VALUES"
 
 # helm reports "deployed" as soon as the Deployment applies. SCC rejections happen

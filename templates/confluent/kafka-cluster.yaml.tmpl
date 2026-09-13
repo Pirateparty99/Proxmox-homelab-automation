@@ -1,0 +1,59 @@
+# A minimal KRaft-mode Kafka cluster for CFK to reconcile.
+#
+# Rendered from config.env by bootstrap.py. Edit the template, not rendered/.
+# Apply with scripts/helm/confluent/deploy-kafka-cluster.sh, which waits for the
+# operator to be running first - these are Custom Resources, so without the CFK
+# operator and its CRDs they are rejected outright.
+#
+# KRaft rather than ZooKeeper: ZooKeeper is removed in Confluent Platform 8, and
+# the Zookeeper CRD still shipping in the chart is there for migrations only.
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: KRaftController
+metadata:
+  name: {{ KAFKA_KRAFT_NAME | required("KAFKA_KRAFT_NAME") }}
+  namespace: {{ CONFLUENT_NAMESPACE | required("CONFLUENT_NAMESPACE") }}
+spec:
+  replicas: {{ KAFKA_KRAFT_REPLICAS | required("KAFKA_KRAFT_REPLICAS") }}
+  image:
+    application: {{ CONFLUENT_CP_IMAGE | required("CONFLUENT_CP_IMAGE") }}
+    init: {{ CONFLUENT_INIT_IMAGE | required("CONFLUENT_INIT_IMAGE") }}
+  dataVolumeCapacity: {{ KAFKA_KRAFT_VOLUME | required("KAFKA_KRAFT_VOLUME") }}
+  storageClass:
+    name: {{ KAFKA_STORAGE_CLASS | required("KAFKA_STORAGE_CLASS") }}
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: Kafka
+metadata:
+  name: {{ KAFKA_NAME | required("KAFKA_NAME") }}
+  namespace: {{ CONFLUENT_NAMESPACE }}
+spec:
+  replicas: {{ KAFKA_REPLICAS | required("KAFKA_REPLICAS") }}
+  image:
+    application: {{ CONFLUENT_CP_IMAGE }}
+    init: {{ CONFLUENT_INIT_IMAGE }}
+  dataVolumeCapacity: {{ KAFKA_VOLUME | required("KAFKA_VOLUME") }}
+  storageClass:
+    name: {{ KAFKA_STORAGE_CLASS }}
+  dependencies:
+    kRaftController:
+      clusterRef:
+        name: {{ KAFKA_KRAFT_NAME }}
+        namespace: {{ CONFLUENT_NAMESPACE }}
+{%- if KAFKA_REPLICAS | int < 3 %}
+  # Kafka's internal topics default to 3 replicas, which can never be satisfied
+  # by {{ KAFKA_REPLICAS }} broker(s): the topics stay under-replicated and
+  # consumer groups fail to form, which surfaces much later as clients hanging
+  # rather than as an error here. Pinned to the broker count instead. Remove
+  # this block once KAFKA_REPLICAS is 3 or more.
+  configOverrides:
+    server:
+      - offsets.topic.replication.factor={{ KAFKA_REPLICAS }}
+      - transaction.state.log.replication.factor={{ KAFKA_REPLICAS }}
+      - transaction.state.log.min.isr={{ KAFKA_REPLICAS }}
+      - confluent.license.topic.replication.factor={{ KAFKA_REPLICAS }}
+      - confluent.metadata.topic.replication.factor={{ KAFKA_REPLICAS }}
+      - confluent.balancer.topic.replication.factor={{ KAFKA_REPLICAS }}
+      - confluent.durability.topic.replication.factor={{ KAFKA_REPLICAS }}
+      - confluent.tier.metadata.replication.factor={{ KAFKA_REPLICAS }}
+{%- endif %}

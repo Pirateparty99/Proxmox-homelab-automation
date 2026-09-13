@@ -8,6 +8,7 @@ to the shell scripts.
     ./bootstrap.py --export        emit `export K=V` lines for a shell to eval
     ./bootstrap.py --json          emit the resolved config as JSON
     ./bootstrap.py --charts        list the Helm charts and their pinned versions
+    ./bootstrap.py --pull-charts   mirror those charts into charts/
     ./bootstrap.py --dependencies  install missing Python packages first
     ./bootstrap.py --credentials   also obtain any missing credential in secrets/
 
@@ -389,6 +390,35 @@ def fetch_credentials(cfg, dry_run=False):
                      % (cred["script"], exc.returncode))
 
 
+def chart_status(cfg):
+    """(chart, cached filename or None, version) for each chart in HELM_CHARTS."""
+    cache = cfg.get("CHART_CACHE", "")
+    out = []
+    for entry in HELM_CHARTS:
+        chart = entry["chart"]
+        version = cfg.get(entry["version_key"], "")
+        found = sorted(glob.glob(os.path.join(cache, "%s-*.tgz" % chart)))
+        if version:
+            # A pinned chart is only satisfied by that exact version; an older
+            # cached copy is worse than none, because it would be used silently.
+            exact = os.path.join(cache, "%s-%s.tgz" % (chart, version))
+            found = [exact] if os.path.isfile(exact) else []
+        out.append((chart, os.path.basename(found[-1]) if found else None, version))
+    return out
+
+
+def pull_charts(dry_run=False):
+    """Hand off to the pull script, which owns the helm invocations."""
+    script = os.path.join(REPO_ROOT, "scripts", "helm", "pull-charts.sh")
+    if not os.path.isfile(script):
+        sys.exit("%s is missing." % script)
+    cmd = [script] + (["--list"] if dry_run else [])
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as exc:
+        sys.exit("\n%s failed (exit %d)." % (script, exc.returncode))
+
+
 def dependency_status():
     """(module, present, what needs it) for each third-party module."""
     importlib.invalidate_caches()
@@ -444,6 +474,8 @@ def main():
     ap.add_argument("--list", action="store_true", help="show what would be rendered")
     ap.add_argument("--export", action="store_true", help="emit shell export lines")
     ap.add_argument("--json", action="store_true", help="emit the resolved config as JSON")
+    ap.add_argument("--pull-charts", action="store_true",
+                    help="mirror the Helm charts into CHART_CACHE (needs network)")
     ap.add_argument("--charts", action="store_true",
                     help="emit the Helm chart table as name/source/version TSV")
     ap.add_argument("--dependencies", action="store_true",
@@ -505,6 +537,14 @@ def main():
         if absent:
             print("\n  missing Python packages: %s" % ", ".join(absent))
             print("  run ./bootstrap.py --dependencies to install them")
+
+    if args.pull_charts:
+        pull_charts(dry_run=args.list)
+    elif not args.quiet:
+        missing = [c for c, cached, _ in chart_status(cfg) if cached is None]
+        if missing:
+            print("\n  charts not cached: %s" % ", ".join(missing))
+            print("  run ./bootstrap.py --pull-charts to mirror them locally")
 
     if args.credentials:
         fetch_credentials(cfg, dry_run=args.list)

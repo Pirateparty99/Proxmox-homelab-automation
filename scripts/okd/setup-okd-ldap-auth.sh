@@ -84,7 +84,25 @@ fi
 # ------------------------------------------------------------------ CA bundle
 log "CA certificate (configmap '${CA_CONFIGMAP}')"
 if oc get configmap "$CA_CONFIGMAP" -n openshift-config >/dev/null 2>&1; then
-  info "already present - not replacing (delete it first to rotate)"
+  # Leaving a stale CA here fails every login with an x509 error that names the
+  # right CA - the old root and the new one share a subject - so compare the
+  # actual certificates rather than just noting that something is present.
+  if [[ -n "$CA_CERT_FILE" && -f "$CA_CERT_FILE" ]]; then
+    have=$(oc get configmap "$CA_CONFIGMAP" -n openshift-config -o jsonpath='{.data.ca\.crt}' 2>/dev/null \
+           | openssl x509 -noout -fingerprint -sha1 2>/dev/null || true)
+    want=$(openssl x509 -in "$CA_CERT_FILE" -noout -fingerprint -sha1 2>/dev/null || true)
+    if [[ -n "$want" && "$have" != "$want" ]]; then
+      warn "configmap holds a different CA than ${CA_CERT_FILE} - rotating"
+      info "  in cluster: ${have:-unreadable}"
+      info "  on disk:    ${want}"
+      run "oc create configmap ${CA_CONFIGMAP} --from-file=ca.crt='${CA_CERT_FILE}' -n openshift-config --dry-run=client -o yaml | oc replace -f -"
+      info "replaced from ${CA_CERT_FILE}"
+    else
+      info "already present and matches ${CA_CERT_FILE}"
+    fi
+  else
+    info "already present - not replacing (set CA_CERT_FILE to rotate)"
+  fi
 elif [[ -n "$CA_CERT_FILE" ]]; then
   [[ -f "$CA_CERT_FILE" ]] || die "CA_CERT_FILE '$CA_CERT_FILE' not found"
   grep -q "BEGIN CERTIFICATE" "$CA_CERT_FILE" \

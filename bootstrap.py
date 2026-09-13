@@ -2,10 +2,12 @@
 """Render every *.tmpl in this repo from config.env, and expose the same values
 to the shell scripts.
 
-    ./bootstrap.py                 render all templates into rendered/
+    ./bootstrap.py                 render all templates into rendered/, and
+                                   stage the static scripts that go with them
     ./bootstrap.py --list          show what would be rendered
     ./bootstrap.py --export        emit `export K=V` lines for a shell to eval
     ./bootstrap.py --json          emit the resolved config as JSON
+    ./bootstrap.py --credentials   also obtain any missing credential in secrets/
 
 This is the single place where derived values are computed. lib/config.sh evals
 --export rather than deriving anything itself, so bash and the templates can
@@ -18,9 +20,12 @@ Targets Python 3.6+ so it runs on the older interpreters in LXC containers.
 
 import argparse
 import base64
+import glob
 import json
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 
 try:
@@ -30,6 +35,39 @@ except ImportError:
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 SKIP_DIRS = {".git", "rendered", "secrets"}
+# A *.tmpl under one of these renders to the tree BELOW it, so both top-level
+# groupings collapse to the same output shape:
+#     templates/helm/x.yaml.tmpl -> rendered/helm/x.yaml
+#     scripts/ad/y.ps1.tmpl      -> rendered/ad/y.ps1
+# Scripts that happen to need rendering therefore sit with the other scripts,
+# not in a separate tree, while their output stays where the docs say it is.
+RENDER_ROOTS = ("templates", "scripts")
+
+# Static files copied verbatim into the render tree, as (glob, destination).
+# A rendered directory should be self-contained: rendered/ad holds the AD CS
+# scripts next to the adcs.env they read, so it can be handed to the CA host as
+# one folder rather than assembled by hand from two places.
+STAGED_FILES = [("scripts/ad/*.ps1", "ad")]
+
+# Credentials are not rendered. They are obtained once from the live systems and
+# written into secrets/, so they are listed here rather than templated: as
+# (what it produces, what produces it, what it is for). --credentials runs the
+# ones whose output is missing. A plain run never touches the network - it only
+# says which are absent - because rendering is something you do casually after
+# editing config.env, and it should not depend on being online or logged in.
+# Each entry is tested either by the file it produces, or - where it leaves no
+# artifact - by trying it. Order is the order they are obtained in.
+CREDENTIALS = [
+    {"desc": "key-based ssh to the CA host",
+     "script": "scripts/ad/authorize-ssh-key.sh",
+     "check": "ssh"},
+    {"desc": "Proxmox API token, for snapshotting the DC",
+     "script": "scripts/proxmox/create-pve-api-token.sh",
+     "file": "secrets/pve-api-token.env"},
+    {"desc": "OKD kubeconfig, from a non-expiring ServiceAccount token",
+     "script": "scripts/okd/create-oc-token.sh",
+     "check": "oc"},
+]
 
 
 def load_config(path):
@@ -75,11 +113,39 @@ def derive(cfg):
     base_ou = cfg["AD_BASE_OU"]
     default("AD_BASE_DN", "%s,%s" % (base_ou, cfg["AD_DOMAIN_DN"]) if base_ou else cfg["AD_DOMAIN_DN"])
     default("AD_GROUP_BASE_DN", "OU=Groups,%s" % cfg["AD_BASE_DN"])
+    default("AD_SERVICE_ACCOUNT_DN", "OU=Service Accounts,%s" % cfg["AD_BASE_DN"])
     default("AD_BIND_DN", "CN=%s,OU=Service Accounts,%s"
                           % (cfg.get("AD_BIND_USER", "ldap.svc"), cfg["AD_BASE_DN"]))
 
     # The adcs-issuer controller appends the page names itself, so no trailing slash.
     default("ADCS_URL", "https://%s/certsrv" % cfg.get("ADCS_HOST", ""))
+    # OKD puts the API on api.<base domain>:6443.
+    default("OKD_API_URL", "https://api.%s:6443" % cfg.get("OKD_BASE_DOMAIN", ""))
+    # 636 is LDAPS, 389 plain - the scheme has to follow the port.
+    default("KASM_LDAP_URL", "%s://%s:%s" % (
+        "ldaps" if str(cfg.get("AD_DC_PORT", "")) == "636" else "ldap",
+        cfg.get("AD_DC_HOST", ""), cfg.get("AD_DC_PORT", "")))
+    # Kasm substitutes the login name into the filter and wraps the result in
+    # parens, so the filter has to pin it to an attribute. Without a placeholder
+    # it matches every user in the base and the login is rejected as ambiguous.
+    # It has to match on both attributes because the two callers pass different
+    # forms: signing in appends the domain (user@domain, matching the UPN) while
+    # the config page's Test button passes the name exactly as typed (matching
+    # sAMAccountName). {0} rather than {} so it can appear twice.
+    _login_attrs = [cfg.get("KASM_LDAP_EMAIL_ATTRIBUTE", "userPrincipalName"), "sAMAccountName"]
+    _login_attrs = list(dict.fromkeys(_login_attrs))  # same attribute twice matches nothing extra
+    _match = "".join("(%s={0})" % a for a in _login_attrs)
+    if len(_login_attrs) > 1:
+        _match = "(|%s)" % _match
+    default("KASM_LDAP_SEARCH_FILTER", "(&(objectClass=user)%s)" % _match)
+    # Resolving the user's groups works the same way, except Kasm substitutes the
+    # user's DN and then treats each matching entry's own DN as one of their
+    # groups - so this has to select GROUP objects the user is a member of. A
+    # filter without a placeholder matches the user themselves, whose DN then
+    # matches no sso_to_group_mapping row, and they end up with no privileges.
+    # Direct membership only: member:1.2.840.113556.1.4.1941:={0} would also walk
+    # nested groups, which can grant admin through an unrelated nesting.
+    default("KASM_LDAP_GROUP_FILTER", "(&(objectClass=group)(member={0}))")
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))
     # Same login, different node: PVE_API_HOST is whichever node hosts the DC VM,
@@ -95,9 +161,14 @@ def derive(cfg):
     # Read the CA in here so the certificate itself never has to live in a
     # template. Absent is not fatal - templates guard on it.
     cfg["ADCS_CA_BUNDLE_B64"] = ""
+    cfg["ADCS_CA_BUNDLE_PEM"] = ""
     if ca and os.path.isfile(ca):
         with open(ca, "rb") as fh:
-            cfg["ADCS_CA_BUNDLE_B64"] = base64.b64encode(fh.read()).decode("ascii")
+            raw = fh.read()
+        cfg["ADCS_CA_BUNDLE_B64"] = base64.b64encode(raw).decode("ascii")
+        # Charts that want the certificate inline (rather than base64) take the
+        # PEM as-is; trailing newline stripped so templates control indentation.
+        cfg["ADCS_CA_BUNDLE_PEM"] = raw.decode("ascii").strip()
 
     # Scripts run from a workstation, so the kubeconfig lives wherever the user
     # keeps it. Expand ~ here: --export shell-quotes values, so a literal tilde
@@ -117,6 +188,21 @@ def find_templates():
             if name.endswith(".tmpl"):
                 found.append(os.path.relpath(os.path.join(dirpath, name), REPO_ROOT))
     return sorted(found)
+
+
+def _output_path(rel):
+    """Where a template renders to, relative to the render dir.
+
+    The leading RENDER_ROOTS segment is dropped, so the rendered tree mirrors
+    the path below it rather than repeating the grouping directory. A .tmpl
+    found anywhere else keeps its own path, so a one-off still works.
+    """
+    out = rel[:-len(".tmpl")]
+    for root in RENDER_ROOTS:
+        prefix = root + os.sep
+        if out.startswith(prefix):
+            return out[len(prefix):]
+    return out
 
 
 def _required(value, name="value"):
@@ -144,7 +230,7 @@ def render(cfg, out_dir, dry_run=False):
     env.filters["psquote"] = _psquote
     results = []
     for rel in find_templates():
-        dest = os.path.join(out_dir, rel[:-len(".tmpl")])
+        dest = os.path.join(out_dir, _output_path(rel))
         results.append((rel, dest))
         if dry_run:
             continue
@@ -153,6 +239,86 @@ def render(cfg, out_dir, dry_run=False):
         with open(dest, "w") as fh:
             fh.write(text)
     return results
+
+
+def stage(out_dir, dry_run=False):
+    """Copy STAGED_FILES into the render tree. Returns (src, dest) pairs."""
+    results = []
+    for pattern, dest_dir in STAGED_FILES:
+        for src in sorted(glob.glob(os.path.join(REPO_ROOT, pattern))):
+            dest = os.path.join(out_dir, dest_dir, os.path.basename(src))
+            results.append((os.path.relpath(src, REPO_ROOT), dest))
+            if dry_run:
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(src, dest)
+    return results
+
+
+def _ssh_works(cfg):
+    """Whether key-based ssh to the CA host already works. Nothing is written
+    when it does, so the only way to know is to try it."""
+    target = "%s@%s" % (cfg.get("ADCS_SSH_USER", ""), cfg.get("ADCS_HOST", ""))
+    try:
+        with open(os.devnull, "w") as null:
+            return subprocess.call(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, "exit"],
+                stdout=null, stderr=null) == 0
+    except OSError:
+        return False
+
+
+def _oc_works():
+    """Whether the generated kubeconfig actually authenticates. Checking only
+    that the file exists is not enough - a kubeconfig can be present and stale,
+    or reference a CA that has since been removed."""
+    path = os.path.join(REPO_ROOT, "secrets", "okd-kubeconfig")
+    if not os.path.isfile(path):
+        return False
+    env = dict(os.environ, KUBECONFIG=path)
+    try:
+        with open(os.devnull, "w") as null:
+            return subprocess.call(["oc", "whoami"], env=env, stdout=null, stderr=null) == 0
+    except OSError:
+        return False
+
+
+CHECKS = {"ssh": lambda cfg: _ssh_works(cfg), "oc": lambda cfg: _oc_works()}
+
+
+def credential_status(cfg):
+    """(credential, present, label) for each, where label names what was tested."""
+    out = []
+    for cred in CREDENTIALS:
+        if "file" in cred:
+            out.append((cred, os.path.isfile(os.path.join(REPO_ROOT, cred["file"])), cred["file"]))
+        elif cred["check"] == "ssh":
+            out.append((cred, CHECKS["ssh"](cfg), "ssh to %s" % cfg.get("ADCS_HOST", "")))
+        else:
+            out.append((cred, CHECKS["oc"](cfg), "oc via secrets/okd-kubeconfig"))
+    return out
+
+
+def fetch_credentials(cfg, dry_run=False):
+    """Run the script behind each missing credential, in order. Present ones are
+    left alone - re-issuing a token invalidates the one already deployed. These
+    scripts prompt: oc and ssh ask for passwords themselves, and nothing here
+    reads, stores or echoes one."""
+    for cred, present, label in credential_status(cfg):
+        if present:
+            print("  have %s" % label)
+            continue
+        if dry_run:
+            print("  would run %s -> %s" % (cred["script"], label))
+            continue
+        print("\n  %s: running %s" % (cred["desc"], cred["script"]))
+        try:
+            subprocess.check_call([os.path.join(REPO_ROOT, cred["script"])])
+        except subprocess.CalledProcessError as exc:
+            # The script has already said what went wrong on stderr; a Python
+            # traceback on top of that buries it.
+            sys.exit("\n%s failed (exit %d). Nothing further was attempted."
+                     % (cred["script"], exc.returncode))
 
 
 def main():
@@ -165,6 +331,9 @@ def main():
     ap.add_argument("--list", action="store_true", help="show what would be rendered")
     ap.add_argument("--export", action="store_true", help="emit shell export lines")
     ap.add_argument("--json", action="store_true", help="emit the resolved config as JSON")
+    ap.add_argument("--credentials", action="store_true",
+                    help="also obtain any missing credential (needs network "
+                         "access; oc and ssh will prompt for passwords)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -186,6 +355,7 @@ def main():
 
     try:
         results = render(cfg, args.out, dry_run=args.list)
+        staged = stage(args.out, dry_run=args.list)
     except Exception as exc:                      # noqa: BLE001 - message is the point
         sys.exit("render failed: %s: %s" % (type(exc).__name__, exc))
 
@@ -195,6 +365,20 @@ def main():
             print("  %s %s -> %s" % (verb, src, os.path.relpath(dest, REPO_ROOT)))
         if not results:
             print("  no *.tmpl files found")
+        verb = "would stage" if args.list else "staged"
+        for src, dest in staged:
+            print("  %s %s -> %s" % (verb, src, os.path.relpath(dest, REPO_ROOT)))
+
+    if args.credentials:
+        fetch_credentials(cfg, dry_run=args.list)
+    elif not args.quiet:
+        # Worth saying, since the deployment stops on a missing one - but only
+        # when something is actually absent. The ssh check costs a connection
+        # attempt, so this is skipped under --quiet.
+        missing = [label for _, present, label in credential_status(cfg) if not present]
+        if missing:
+            print("\n  missing credentials: %s" % ", ".join(missing))
+            print("  run ./bootstrap.py --credentials to obtain them")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,27 @@ Ceph CSI storage, cert-manager with an AD CS issuer.
 Nothing site-specific is committed. Hostnames, domains, IPs and credentials live
 in `config.env`, which is gitignored.
 
+## Layout
+
+```
+config.env          site values (gitignored)
+bootstrap.py        renders every *.tmpl -> rendered/, and exports the same values to bash
+lib/config.sh       what bash scripts source to get those values
+
+templates/          config-driven files that are not themselves scripts
+  helm/<chart>/       values files and manifests
+
+scripts/            everything runnable, grouped by what it targets
+  ad/                 PowerShell for the domain controllers / CA
+  okd/                against the OKD cluster
+  helm/<chart>/       helm installs and the objects around them
+  proxmox/            against the Proxmox API / nodes
+
+rendered/           bootstrap.py output (gitignored)
+  ad/                 the self-contained bundle to copy to the CA host
+secrets/            certificates pulled from the domain (gitignored)
+```
+
 ## Setup
 
 ```bash
@@ -18,21 +39,46 @@ $EDITOR config.env                    # set AD_DOMAIN and the site values
 Export the AD root CA to wherever `AD_CA_CERT_FILE` points:
 
 ```bash
-certutil -ca.cert ca.cer                                   # on the CA
-openssl x509 -inform der -in ca.cer -out secrets/ad-ca.crt
+# on the CA, as one line - print the root CA certificate as base64
+powershell -NoProfile -Command "[Convert]::ToBase64String((Get-ChildItem Cert:\LocalMachine\Root | Where-Object Subject -match 'CN=Your-CA').RawData)"
+# then locally
+base64 -d < ca.b64 > ca.der && openssl x509 -inform der -in ca.der -out secrets/ad-ca.crt
 ```
+
+Re-export this whenever the CA is rebuilt: the root changes, and the issuer's
+`caBundle` is generated from this file. A stale one shows up as
+`curl exit 60` in the `configure-clusterissuer.sh` preflight.
 
 ## Usage
 
 ```bash
-./bootstrap.py            # render templates - re-run after editing config.env
+./bootstrap.py                  # render templates - re-run after editing config.env
+./bootstrap.py --credentials    # ...and obtain any credential missing from secrets/
 ```
+
+A plain run is offline and side-effect free: it renders, stages, and says which
+credentials are absent. `--credentials` additionally obtains the missing ones, in
+order:
+
+| Credential | Obtained by | Prompts for |
+| --- | --- | --- |
+| key-based ssh to the CA host | `scripts/ad/authorize-ssh-key.sh` | the `ADCS_SSH_USER` password, by ssh |
+| Proxmox API token | `scripts/proxmox/create-pve-api-token.sh` | nothing (uses your ssh key to the node) |
+| OKD kubeconfig | `scripts/okd/create-oc-token.sh` | the `OKD_LOGIN_USER` password, by `oc login` |
+
+**Run it from a terminal** — `oc` and `ssh` prompt for those passwords
+themselves. Nothing in this repo reads, stores or echoes a password; the tokens
+they produce are what gets written to `secrets/`.
+
+Credentials already present are left alone, because re-issuing a token
+invalidates the one already deployed. The ssh one has no artifact to check, so
+it is tested by trying it.
 
 Then run any script directly; they read the config themselves.
 
 ```bash
-okd/scripts/setup-okd-ldap-auth.sh
-helm/certificate-manager/scripts/deploy-cert-man.sh
+scripts/okd/setup-okd-ldap-auth.sh
+scripts/helm/certificate-manager/deploy-cert-man.sh
 ```
 
 Scripts run from your workstation and need `oc`, `helm` and a working
@@ -45,8 +91,9 @@ To get the same variables in your own shell:
 source lib/config.sh
 ```
 
-Other `bootstrap.py` flags: `--list` (what would render), `--export` (shell
-export lines), `--json` (resolved config).
+Other `bootstrap.py` flags: `--list` (what would render — combines with
+`--credentials` to show what would be fetched), `--export` (shell export lines),
+`--json` (resolved config).
 
 ## How it fits together
 
@@ -71,11 +118,22 @@ environment variable set at run time wins over the file.
 Follow these and new scripts need no changes here.
 
 - **Never hardcode a site value.** Add it to `config.env.example` and `config.env`.
-- **A file needing site values is a `*.tmpl`.** `bootstrap.py` finds every one in
-  the repo and renders it into `rendered/`, mirroring the source path.
+- **Everything runnable lives under `scripts/`,** grouped by what it targets:
+  `scripts/ad`, `scripts/okd`, `scripts/helm/<chart>`, `scripts/proxmox`.
+- **Static files a rendered directory needs** are listed in `STAGED_FILES` in
+  `bootstrap.py`, which copies them in — so a rendered directory is something
+  you can hand to another machine whole.
+- **A file needing site values is a `*.tmpl`.** `bootstrap.py` renders it into
+  `rendered/`, dropping the leading `templates/` or `scripts/` — so
+  `templates/helm/x.yaml.tmpl` becomes `rendered/helm/x.yaml`, and
+  `templates/ad/adcs.env.tmpl` becomes `rendered/ad/adcs.env`. A script that
+  needs rendering would sit with the other scripts; today only config is
+  templated, so `templates/` holds all of it.
 - **Bash scripts** `source lib/config.sh` and read the variables.
-- **PowerShell scripts** are templated whole — values are baked into `param()`
-  defaults via the `psquote` filter, so the Windows host needs no config file.
+- **PowerShell scripts** are ordinary `.ps1`, not templates. They read
+  `adcs.env` through `scripts/ad/Get-AdcsConfig.ps1`; only that env file is
+  generated. Any parameter passed on the command line wins over the file, and an
+  environment variable of the same name wins over both.
 - **`config.env`, `secrets/` and `rendered/` are gitignored.** Anything
   site-specific belongs in one of them.
 
@@ -89,29 +147,104 @@ The issuer talks to the **Certification Authority Web Enrollment** pages
 (`/certsrv`) over HTTPS. That role service, not the CA on its own and not CES,
 is what it depends on — without it the issuer never goes ready.
 
-Render first (`./bootstrap.py`), then copy each rendered `.ps1` to the Windows
-host named and run it elevated:
-
-| # | On | Script | Does |
-| --- | --- | --- | --- |
-| 1 | CA host | `Install-AdcsCertificationAuthority.ps1` | AD CS role + Enterprise CA |
-| 2 | a DC | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
-| 3 | CA host | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
-
-Step 2 needs Domain Admins; 1 and 3 need Enterprise Admins. Reboot the web host
-between 2 and 3 so it picks up its new group membership, or
-`Test-ADServiceAccount` fails in step 3.
-
-Step 1 snapshots its own VM through the Proxmox API before it changes anything.
-Create a token and grant it `VM.Snapshot` on the DC:
+Once the three prerequisites below are in place, `scripts/deploy-adcs.sh` runs
+the whole thing — bundle, the DC, cert-manager, the issuer:
 
 ```bash
-pveum user token add root@pam automation --privsep 0
+PVE_API_TOKEN=... scripts/deploy-adcs.sh --dry-run   # then without --dry-run
 ```
 
-Put the token *id* in `PVE_API_TOKEN_ID`; the secret is never stored in the repo
-— export `PVE_API_TOKEN` on the Windows host or let the script prompt. Add
-`-WhatIf` to see what it would snapshot, or `-SnapshotFirst:$false` to skip.
+It needs key-based ssh to the CA host and a working cluster credential, and
+checks both before touching anything. For the cluster, run
+`scripts/okd/create-oc-token.sh` once: `oc login` hands out an OAuth token that
+expires (24h for kubeadmin), so automation that worked yesterday fails today.
+That script creates a ServiceAccount bound to cluster-admin, issues it a
+non-expiring token and writes `secrets/okd-kubeconfig`, which `lib/config.sh`
+points `KUBECONFIG` at. If there is no usable session it runs `oc login` for you
+and lets `oc` prompt for the password, so it bootstraps itself.
+
+That kubeconfig is a non-expiring cluster-admin credential; treat it as the
+cluster's root password. Revoke by deleting the namespace and clusterrolebinding
+it names. The Proxmox token it handles itself: `create-pve-api-token.sh`
+writes the secret to `secrets/pve-api-token.env` (gitignored, mode 600) and
+`lib/config.sh` sources it, so nothing has to be exported by hand. An already-set
+`PVE_API_TOKEN` still wins, for a one-off override.
+
+The secret is shown by Proxmox exactly once, so it is captured straight to that
+file rather than echoed. Delete the file and it cannot be recovered — re-issue
+with `create-pve-api-token.sh --recreate`.
+
+The rest of this section is what the deployment does, step by step.
+
+First create the Proxmox API token the CA step uses to snapshot the DC:
+
+```bash
+scripts/proxmox/create-pve-api-token.sh --dry-run   # then without --dry-run
+```
+
+That makes a `PVESnapshotOnly` role (`VM.Audit`, `VM.Snapshot` — deliberately
+*not* `VM.Snapshot.Rollback`) and grants it on the DC's VM alone, so the
+credential sitting on a Windows host cannot do anything else. Proxmox prints the
+secret once; it is never stored in the repo.
+
+Then get the bundle onto the CA host. `./bootstrap.py` renders `adcs.env` and
+stages the `.ps1` beside it, so `rendered/ad` is self-contained — one directory
+holding everything that host needs:
+
+```bash
+scripts/ad/authorize-ssh-key.sh          # once - so the copy runs unprompted
+scripts/ad/copy-to-ca-host.sh            # render, then scp to $ADCS_HOST
+scripts/ad/copy-to-ca-host.sh --zip      # or write rendered/ad.zip to move by hand
+```
+
+`authorize-ssh-key.sh` installs your public key on the CA host. It exists
+because `ssh-copy-id` silently does nothing useful there: Windows OpenSSH sends
+accounts in the local Administrators group to a shared
+`C:\ProgramData\ssh\administrators_authorized_keys`, ignores
+`~/.ssh/authorized_keys` for them, and refuses that shared file unless its ACL
+grants only Administrators and SYSTEM. The script checks the account's group
+membership, picks the right file and fixes the ACL. Note that file is shared by
+every administrator on the host, so prefer a dedicated key (`--key`) over your
+general-purpose one.
+
+It checks both halves of the bundle are present before copying, so a half-staged
+directory fails here rather than on the CA host. One elevated run does the lot:
+
+```powershell
+$env:PVE_API_TOKEN = '<secret>'      # or let it prompt
+.\Install-AdcsChain.ps1
+```
+
+It calls the three scripts in order, and installs the gMSA on the host in
+between:
+
+| # | Script | Does |
+| --- | --- | --- |
+| 1 | `Install-AdcsCertificationAuthority.ps1` | snapshot, AD CS role, Enterprise CA |
+| 2 | `New-AdcsEnrollmentAccount.ps1` | the account cert-manager enrols as, plus Enroll on the template |
+| 3 | `New-AdcsWebEnrollmentGmsa.ps1` | gMSA for the `/certsrv` app pool |
+| 4 | `Install-AdcsWebEnrollment.ps1` | publishes `/certsrv` over HTTPS |
+
+Step 2 prompts for the new account's password — use the same one when
+`configure-clusterissuer.sh` asks for it later. Creating the account is only half
+of it: the CA refuses requests from a principal without **Enroll** on the
+template, and the stock `WebServer` template grants that to Domain Admins and
+Enterprise Admins only.
+
+Run as Enterprise Admins — step 2 alone would only need Domain Admins.
+
+**These are safe to re-run.** Each step creates only what is missing and leaves
+what is already there, so a chain that failed part way can just be run again —
+no rollback needed. The one deliberate exception is the CA itself: an existing
+CA is never reconfigured, because that invalidates every certificate it has
+issued.
+
+This works as one run because the CA host here is also a domain controller. Split
+those roles across machines and the three scripts have to be run separately, on
+the right host each time; `Install-AdcsChain.ps1` checks and refuses rather than
+guessing. Step 2 normally needs a reboot before step 3 so the host sees its new
+group membership — the chain purges the computer's Kerberos tickets instead, and
+only asks for a reboot if that was not enough.
 
 Taking a snapshot of a running DC is safe. **Rolling one back is not**, and no
 script here does it — see the `.NOTES` in `Install-AdcsCertificationAuthority.ps1`
@@ -120,8 +253,8 @@ for the USN-rollback and VM-GenerationID detail before you ever restore one.
 Then, from the workstation:
 
 ```bash
-helm/certificate-manager/scripts/deploy-cert-man.sh          # cert-manager + adcs-issuer
-helm/certificate-manager/scripts/deploy-adcs-clusterissuer.sh  # secret + ClusterAdcsIssuer
+scripts/helm/certificate-manager/deploy-cert-man.sh          # cert-manager + adcs-issuer
+scripts/helm/certificate-manager/configure-clusterissuer.sh  # secret + ClusterAdcsIssuer
 ```
 
 The second checks `ADCS_URL` is reachable and that its certificate validates
@@ -130,7 +263,9 @@ report ready. `SKIP_PREFLIGHT=1` bypasses the check.
 
 `New-AdcsCesGmsa.ps1` is separate and optional — CES (`ADCS-Enroll-Web-Svc`) is a
 different role service, for clients that enrol over the WS-Trust API. The
-adcs-issuer does not use it.
+adcs-issuer does not use it, and it is deliberately not in the chain: it claims
+the same `HTTP/<host>` SPNs as the web enrollment gMSA, and an SPN belongs to one
+principal forest-wide, so running both against one host fails the second.
 
 ## Notes
 

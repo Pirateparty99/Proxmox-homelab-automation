@@ -7,6 +7,7 @@ to the shell scripts.
     ./bootstrap.py --list          show what would be rendered
     ./bootstrap.py --export        emit `export K=V` lines for a shell to eval
     ./bootstrap.py --json          emit the resolved config as JSON
+    ./bootstrap.py --dependencies  install missing Python packages first
     ./bootstrap.py --credentials   also obtain any missing credential in secrets/
 
 This is the single place where derived values are computed. lib/config.sh evals
@@ -14,13 +15,15 @@ This is the single place where derived values are computed. lib/config.sh evals
 never drift apart. PowerShell scripts are rendered with their values baked into
 param() defaults, so Windows hosts need neither Python nor config.env.
 
-Requires Jinja2:  dnf install python3-jinja2   |   pip install jinja2
+Requires Jinja2 to render: ./bootstrap.py --dependencies installs it and the
+rest of requirements.txt, or use dnf install python3-jinja2.
 Targets Python 3.6+ so it runs on the older interpreters in LXC containers.
 """
 
 import argparse
 import base64
 import glob
+import importlib.util
 import json
 import os
 import shlex
@@ -28,10 +31,27 @@ import shutil
 import subprocess
 import sys
 
-try:
-    from jinja2 import Environment, FileSystemLoader, StrictUndefined
-except ImportError:
-    sys.exit("Jinja2 is not installed. Try: dnf install python3-jinja2  (or pip install jinja2)")
+# Bound here so a failed import leaves them None rather than unbound - render()
+# tests for None, and a NameError would bypass that check with a worse message.
+Environment = FileSystemLoader = StrictUndefined = None
+
+
+def _load_jinja():
+    """Import Jinja2 into module scope, reporting whether it is there.
+
+    Deliberately not fatal at import time: --dependencies exists to install
+    Jinja2, and it cannot do that if merely starting up without Jinja2 is an
+    error. Only render() actually needs it, so that is where it is enforced.
+    Called again after an install, because by then the import can succeed."""
+    global Environment, FileSystemLoader, StrictUndefined
+    try:
+        from jinja2 import Environment, FileSystemLoader, StrictUndefined
+        return True
+    except ImportError:
+        return False
+
+
+_load_jinja()
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 SKIP_DIRS = {".git", "rendered", "secrets"}
@@ -48,6 +68,18 @@ RENDER_ROOTS = ("templates", "scripts")
 # scripts next to the adcs.env they read, so it can be handed to the CA host as
 # one folder rather than assembled by hand from two places.
 STAGED_FILES = [("scripts/ad/*.ps1", "ad")]
+
+# Third-party Python modules the scripts in this repo need, as (import name,
+# what needs it). The versions live in requirements.txt, which stays the single
+# source for what gets installed - this table exists only to say whether a
+# package is already present, which needs the import name rather than the pip
+# name (PyYAML imports as yaml).
+DEPENDENCIES = [
+    ("jinja2", "bootstrap.py, to render the templates"),
+    ("yaml", "scripts/okd/deploy-wmco.py"),
+    ("kubernetes", "scripts/okd/deploy-wmco.py"),
+]
+REQUIREMENTS = os.path.join(REPO_ROOT, "requirements.txt")
 
 # Credentials are not rendered. They are obtained once from the live systems and
 # written into secrets/, so they are listed here rather than templated: as
@@ -221,6 +253,9 @@ def _psquote(value):
 
 
 def render(cfg, out_dir, dry_run=False):
+    if Environment is None:
+        sys.exit("Jinja2 is not installed, so nothing can be rendered.\n"
+                 "  ./bootstrap.py --dependencies   (or: dnf install python3-jinja2)")
     env = Environment(
         loader=FileSystemLoader(REPO_ROOT),
         undefined=StrictUndefined,   # an unset variable is an error, not a blank
@@ -321,6 +356,51 @@ def fetch_credentials(cfg, dry_run=False):
                      % (cred["script"], exc.returncode))
 
 
+def dependency_status():
+    """(module, present, what needs it) for each third-party module."""
+    importlib.invalidate_caches()
+    return [(mod, importlib.util.find_spec(mod) is not None, why)
+            for mod, why in DEPENDENCIES]
+
+
+def install_dependencies(dry_run=False):
+    """pip install anything missing, from requirements.txt.
+
+    Installs the whole file rather than just the missing names so the pinned
+    versions there are what actually gets applied."""
+    missing = [(mod, why) for mod, present, why in dependency_status() if not present]
+    if not missing:
+        print("  all Python dependencies present")
+        return
+    for mod, why in missing:
+        print("  missing %s (needed by %s)" % (mod, why))
+    if dry_run:
+        print("  would run pip install -r %s" % os.path.relpath(REQUIREMENTS, REPO_ROOT))
+        return
+    if not os.path.isfile(REQUIREMENTS):
+        sys.exit("%s is missing, so there is nothing to install from." % REQUIREMENTS)
+
+    cmd = [sys.executable, "-m", "pip", "install", "-r", REQUIREMENTS]
+    print("\n  %s" % " ".join(cmd))
+    if subprocess.call(cmd) != 0:
+        # PEP 668: a distro-packaged interpreter refuses to install into itself.
+        # Outside a virtualenv that refusal is the normal outcome on Fedora and
+        # Debian, and this flag is the documented way past it - so retry rather
+        # than making the user work out which of the two failures this was.
+        print("\n  pip declined; retrying with --break-system-packages")
+        if subprocess.call(cmd + ["--break-system-packages"]) != 0:
+            sys.exit("\npip install failed. Install them by hand:\n"
+                     "  pip install -r %s" % os.path.relpath(REQUIREMENTS, REPO_ROOT))
+
+    still = [mod for mod, present, _ in dependency_status() if not present]
+    if still:
+        sys.exit("\npip reported success but these are still not importable: %s"
+                 % ", ".join(still))
+    # Rendering happens later in this same process, which started without it.
+    _load_jinja()
+    print("  installed")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -331,11 +411,16 @@ def main():
     ap.add_argument("--list", action="store_true", help="show what would be rendered")
     ap.add_argument("--export", action="store_true", help="emit shell export lines")
     ap.add_argument("--json", action="store_true", help="emit the resolved config as JSON")
+    ap.add_argument("--dependencies", action="store_true",
+                    help="install missing Python packages from requirements.txt")
     ap.add_argument("--credentials", action="store_true",
                     help="also obtain any missing credential (needs network "
                          "access; oc and ssh will prompt for passwords)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+
+    if args.dependencies:
+        install_dependencies(dry_run=args.list)
 
     cfg = derive(load_config(args.config))
     cfg["RENDER_DIR"] = args.out
@@ -368,6 +453,15 @@ def main():
         verb = "would stage" if args.list else "staged"
         for src, dest in staged:
             print("  %s %s -> %s" % (verb, src, os.path.relpath(dest, REPO_ROOT)))
+
+    if not args.quiet and not args.dependencies:
+        # Cheap - just an import check - so unlike the credential probes this
+        # does not need to wait for a flag before it is worth doing.
+        absent = ["%s (%s)" % (mod, why)
+                  for mod, present, why in dependency_status() if not present]
+        if absent:
+            print("\n  missing Python packages: %s" % ", ".join(absent))
+            print("  run ./bootstrap.py --dependencies to install them")
 
     if args.credentials:
         fetch_credentials(cfg, dry_run=args.list)

@@ -994,9 +994,10 @@ kasmConfig:
   # documentation for additional details.
   #
   config:
-    # Authenticate users against AD over LDAP. Only members of KASM_LDAP_GROUP_DN
-    # may sign in; auto_create_app_user creates the Kasm user on first successful
-    # login so accounts do not have to be provisioned by hand.
+    # Authenticate users against AD over LDAP. auto_create_app_user creates the
+    # Kasm user on first successful login so accounts do not have to be
+    # provisioned by hand. Privileges come from sso_to_group_mapping: a user in
+    # neither mapped group can sign in but lands with no privileges at all.
     #
     # The bind password is NOT here - existingSecret points at a Kubernetes Secret
     # created by scripts/helm/kasm-workspaces/configure-kasm-ldap.sh, so it stays
@@ -1007,9 +1008,9 @@ kasmConfig:
         search_base: {{ AD_BASE_DN | required("AD_BASE_DN") | tojson }}
         # Kasm matches the username itself; this narrows what it searches.
         search_filter: {{ KASM_LDAP_SEARCH_FILTER | required("KASM_LDAP_SEARCH_FILTER") | tojson }}
-        # Either group may sign in; which privileges they get is decided by
-        # sso_to_group_mapping below.
-        group_membership_filter: {{ ("(|(memberOf=" ~ KASM_LDAP_USERS_GROUP_DN ~ ")(memberOf=" ~ KASM_LDAP_ADMINS_GROUP_DN ~ "))") | tojson }}
+        # Selects the groups the user belongs to - {0} is their DN. Which
+        # privileges those confer is decided by sso_to_group_mapping below.
+        group_membership_filter: {{ KASM_LDAP_GROUP_FILTER | required("KASM_LDAP_GROUP_FILTER") | tojson }}
         service_account_dn: {{ AD_BIND_DN | required("AD_BIND_DN") | tojson }}
         existingSecret: {{ KASM_LDAP_SECRET | required("KASM_LDAP_SECRET") | tojson }}
         existingSecretKey: "password"

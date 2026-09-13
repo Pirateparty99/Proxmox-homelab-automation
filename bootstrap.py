@@ -138,6 +138,14 @@ def derive(cfg):
     if len(_login_attrs) > 1:
         _match = "(|%s)" % _match
     default("KASM_LDAP_SEARCH_FILTER", "(&(objectClass=user)%s)" % _match)
+    # Resolving the user's groups works the same way, except Kasm substitutes the
+    # user's DN and then treats each matching entry's own DN as one of their
+    # groups - so this has to select GROUP objects the user is a member of. A
+    # filter without a placeholder matches the user themselves, whose DN then
+    # matches no sso_to_group_mapping row, and they end up with no privileges.
+    # Direct membership only: member:1.2.840.113556.1.4.1941:={0} would also walk
+    # nested groups, which can grant admin through an unrelated nesting.
+    default("KASM_LDAP_GROUP_FILTER", "(&(objectClass=group)(member={0}))")
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))
     # Same login, different node: PVE_API_HOST is whichever node hosts the DC VM,

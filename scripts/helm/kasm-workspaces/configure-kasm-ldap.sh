@@ -51,6 +51,10 @@ EMAIL_ATTR="${KASM_LDAP_EMAIL_ATTRIBUTE:-userPrincipalName}"
 # attributes are matched because signing in passes user@domain while the Test
 # button passes the bare name.
 FILTER="${KASM_LDAP_SEARCH_FILTER:-(&(objectClass=user)(|($EMAIL_ATTR={0})(sAMAccountName={0})))}"
+# Selects the GROUPS the user belongs to - {0} is their DN, and each match's own
+# DN is compared against the sso_to_group_mapping rows below. Without the
+# placeholder this matches the user instead, and they get no privileges.
+GROUP_FILTER="${KASM_LDAP_GROUP_FILTER:-(&(objectClass=group)(member={0}))}"
 
 MODE=run
 case "${1:-}" in
@@ -165,7 +169,7 @@ if [[ -n "$LDAP_ID" ]]; then
              search_filter='$(q "$FILTER")', search_subtree=true, enabled=true,
              auto_create_app_user=true, connection_timeout=10,
              email_attribute='$(q "$EMAIL_ATTR")',
-             group_membership_filter='(|(memberOf=$(q "$USERS_DN"))(memberOf=$(q "$ADMINS_DN")))',
+             group_membership_filter='$(q "$GROUP_FILTER")',
              service_account_dn='$(q "$BIND_DN")', service_account_password='$(q "$ENC")'
            where ldap_id = '$LDAP_ID'" >/dev/null
   info "updated existing config \"$NAME\""
@@ -176,7 +180,7 @@ else
        group_membership_filter)
     values ('$(q "$NAME")', true, '$(q "$URL")', true, '$(q "$EMAIL_ATTR")', '$(q "$BASE_DN")',
        '$(q "$FILTER")', true, '$(q "$BIND_DN")', '$(q "$ENC")', 10,
-       '(|(memberOf=$(q "$USERS_DN"))(memberOf=$(q "$ADMINS_DN")))')
+       '$(q "$GROUP_FILTER")')
     returning ldap_id" | head -1)
   info "created config \"$NAME\""
 fi

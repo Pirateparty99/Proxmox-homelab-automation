@@ -21,6 +21,14 @@ spec:
   dataVolumeCapacity: {{ KAFKA_KRAFT_VOLUME | required("KAFKA_KRAFT_VOLUME") }}
   storageClass:
     name: {{ KAFKA_STORAGE_CLASS | required("KAFKA_STORAGE_CLASS") }}
+  podTemplate:
+    # CFK otherwise stamps runAsUser/fsGroup 1001 onto the pod, which OpenShift's
+    # restricted-v2 SCC rejects outright - the namespace has its own UID range
+    # and 1001 is not in it, so the StatefulSet never creates a pod. An empty
+    # context leaves the UID to OpenShift, which is what Confluent themselves
+    # recommend for OpenShift. Setting podSecurity.enabled=false on the operator
+    # chart covers the operator pod only; every component CR needs this too.
+    podSecurityContext: {}
 ---
 apiVersion: platform.confluent.io/v1beta1
 kind: Kafka
@@ -35,6 +43,9 @@ spec:
   dataVolumeCapacity: {{ KAFKA_VOLUME | required("KAFKA_VOLUME") }}
   storageClass:
     name: {{ KAFKA_STORAGE_CLASS }}
+  podTemplate:
+    # See the KRaftController above - same SCC rejection applies here.
+    podSecurityContext: {}
   dependencies:
     kRaftController:
       clusterRef:

@@ -18,7 +18,7 @@ Usage:
                             [--timeout SECONDS] [--dry-run]
 
 Dependencies:
-    pip install kubernetes jinja2 pyyaml --break-system-packages
+    ./bootstrap.py --dependencies      (installs requirements.txt)
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ try:
 except ImportError as e:
     print(
         "ERROR: missing dependency. Install with:\n"
-        "  pip install kubernetes jinja2 pyyaml --break-system-packages\n"
+        "  ./bootstrap.py --dependencies\n"
         f"({e})",
         file=sys.stderr,
     )

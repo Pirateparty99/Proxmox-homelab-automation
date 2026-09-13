@@ -46,6 +46,9 @@ BASE_DN="${AD_BASE_DN:?set AD_BASE_OU in config.env}"
 USERS_DN="${KASM_LDAP_USERS_GROUP_DN:?set it in config.env}"
 ADMINS_DN="${KASM_LDAP_ADMINS_GROUP_DN:?set it in config.env}"
 EMAIL_ATTR="${KASM_LDAP_EMAIL_ATTRIBUTE:-userPrincipalName}"
+# Kasm substitutes the login name into {} - a filter without that placeholder
+# matches every user in the base and the login fails as ambiguous.
+FILTER="${KASM_LDAP_SEARCH_FILTER:-(&(objectClass=user)($EMAIL_ATTR={}))}"
 
 MODE=run
 case "${1:-}" in
@@ -157,7 +160,7 @@ log "Writing the LDAP configuration"
 LDAP_ID=$(psql_do "select ldap_id from ldap_configs where name = '$(q "$NAME")'" | head -1)
 if [[ -n "$LDAP_ID" ]]; then
   psql_do "update ldap_configs set url='$(q "$URL")', search_base='$(q "$BASE_DN")',
-             search_filter='(objectClass=user)', search_subtree=true, enabled=true,
+             search_filter='$(q "$FILTER")', search_subtree=true, enabled=true,
              auto_create_app_user=true, connection_timeout=10,
              email_attribute='$(q "$EMAIL_ATTR")',
              group_membership_filter='(|(memberOf=$(q "$USERS_DN"))(memberOf=$(q "$ADMINS_DN")))',
@@ -170,7 +173,7 @@ else
        search_subtree, service_account_dn, service_account_password, connection_timeout,
        group_membership_filter)
     values ('$(q "$NAME")', true, '$(q "$URL")', true, '$(q "$EMAIL_ATTR")', '$(q "$BASE_DN")',
-       '(objectClass=user)', true, '$(q "$BIND_DN")', '$(q "$ENC")', 10,
+       '$(q "$FILTER")', true, '$(q "$BIND_DN")', '$(q "$ENC")', 10,
        '(|(memberOf=$(q "$USERS_DN"))(memberOf=$(q "$ADMINS_DN")))')
     returning ldap_id" | head -1)
   info "created config \"$NAME\""

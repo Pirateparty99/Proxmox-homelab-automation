@@ -1006,7 +1006,7 @@ kasmConfig:
         url: {{ KASM_LDAP_URL | required("KASM_LDAP_URL") | tojson }}
         search_base: {{ AD_BASE_DN | required("AD_BASE_DN") | tojson }}
         # Kasm matches the username itself; this narrows what it searches.
-        search_filter: "(objectClass=user)"
+        search_filter: {{ KASM_LDAP_SEARCH_FILTER | required("KASM_LDAP_SEARCH_FILTER") | tojson }}
         # Either group may sign in; which privileges they get is decided by
         # sso_to_group_mapping below.
         group_membership_filter: {{ ("(|(memberOf=" ~ KASM_LDAP_USERS_GROUP_DN ~ ")(memberOf=" ~ KASM_LDAP_ADMINS_GROUP_DN ~ "))") | tojson }}

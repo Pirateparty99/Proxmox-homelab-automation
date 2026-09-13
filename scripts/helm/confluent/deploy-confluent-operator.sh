@@ -53,39 +53,16 @@ render_templates --quiet
 VALUES="$RENDER_DIR/helm/confluent/values.yaml"
 [[ -f "$VALUES" ]] || die "missing $VALUES - did bootstrap.py run?"
 
-read -ra CHART <<< "$(chart_args confluent-for-kubernetes)"
-log "Chart"
-info "${CHART[*]}"
-
-if [[ "$MODE" == dryrun ]]; then
-  log "Rendering only"
-  helm template "$RELEASE" "${CHART[@]}" -n "$NAMESPACE" --values "$VALUES" \
-    | grep -E "^kind:|^  name:" | paste - - | sed 's/^/    /'
-  exit 0
-fi
-
-log "Namespace ${NAMESPACE}"
-oc create namespace "$NAMESPACE" --dry-run=client -o yaml | oc apply -f - >/dev/null
-info "ready"
-
-log "Installing ${RELEASE}"
-helm upgrade --install "$RELEASE" "${CHART[@]}" \
-  --namespace "$NAMESPACE" \
+DEPLOY_ARGS=(
+  --chart confluent-for-kubernetes
+  --release "$RELEASE"
+  --namespace "$NAMESPACE"
   --values "$VALUES"
+)
+[[ "$MODE" == dryrun ]] && DEPLOY_ARGS+=(--dry-run) || DEPLOY_ARGS+=(--wait)
 
-# The chart names the Deployment after .Values.name, not the release, so it is
-# only called "confluent-operator" by coincidence of the default. Find it by the
-# instance label instead, which helm always sets to the release.
-log "Waiting for the operator to become available"
-DEPLOY=$(oc get deployment -n "$NAMESPACE" \
-           -l "app.kubernetes.io/instance=${RELEASE}" -o name 2>/dev/null | head -1)
-[[ -n "$DEPLOY" ]] || die "helm reported success but no Deployment carries instance=${RELEASE}"
-info "${DEPLOY#deployment.apps/}"
-if ! oc rollout status "$DEPLOY" -n "$NAMESPACE" --timeout=300s; then
-  info "rollout did not complete - recent events:"
-  oc get events -n "$NAMESPACE" --sort-by=.lastTimestamp 2>/dev/null | tail -15 | sed 's/^/    /'
-  die "operator did not start"
-fi
+"$REPO_ROOT/scripts/helm/helm-deploy.sh" "${DEPLOY_ARGS[@]}"
+[[ "$MODE" == dryrun ]] && exit 0
 
 log "Installed"
 oc get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE}" --no-headers 2>/dev/null | sed 's/^/    /'

@@ -125,11 +125,19 @@ def derive(cfg):
     default("KASM_LDAP_URL", "%s://%s:%s" % (
         "ldaps" if str(cfg.get("AD_DC_PORT", "")) == "636" else "ldap",
         cfg.get("AD_DC_HOST", ""), cfg.get("AD_DC_PORT", "")))
-    # Kasm substitutes the login name into {} and wraps the result in parens, so
-    # the filter has to pin it to one attribute. A filter without a placeholder
-    # matches every user in the base and the login is rejected as ambiguous.
-    default("KASM_LDAP_SEARCH_FILTER", "(&(objectClass=user)(%s={}))"
-                                       % cfg.get("KASM_LDAP_EMAIL_ATTRIBUTE", "userPrincipalName"))
+    # Kasm substitutes the login name into the filter and wraps the result in
+    # parens, so the filter has to pin it to an attribute. Without a placeholder
+    # it matches every user in the base and the login is rejected as ambiguous.
+    # It has to match on both attributes because the two callers pass different
+    # forms: signing in appends the domain (user@domain, matching the UPN) while
+    # the config page's Test button passes the name exactly as typed (matching
+    # sAMAccountName). {0} rather than {} so it can appear twice.
+    _login_attrs = [cfg.get("KASM_LDAP_EMAIL_ATTRIBUTE", "userPrincipalName"), "sAMAccountName"]
+    _login_attrs = list(dict.fromkeys(_login_attrs))  # same attribute twice matches nothing extra
+    _match = "".join("(%s={0})" % a for a in _login_attrs)
+    if len(_login_attrs) > 1:
+        _match = "(|%s)" % _match
+    default("KASM_LDAP_SEARCH_FILTER", "(&(objectClass=user)%s)" % _match)
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))
     # Same login, different node: PVE_API_HOST is whichever node hosts the DC VM,

@@ -46,9 +46,11 @@ BASE_DN="${AD_BASE_DN:?set AD_BASE_OU in config.env}"
 USERS_DN="${KASM_LDAP_USERS_GROUP_DN:?set it in config.env}"
 ADMINS_DN="${KASM_LDAP_ADMINS_GROUP_DN:?set it in config.env}"
 EMAIL_ATTR="${KASM_LDAP_EMAIL_ATTRIBUTE:-userPrincipalName}"
-# Kasm substitutes the login name into {} - a filter without that placeholder
-# matches every user in the base and the login fails as ambiguous.
-FILTER="${KASM_LDAP_SEARCH_FILTER:-(&(objectClass=user)($EMAIL_ATTR={}))}"
+# Kasm substitutes the login name into the filter - without a placeholder it
+# matches every user in the base and the login fails as ambiguous. Both
+# attributes are matched because signing in passes user@domain while the Test
+# button passes the bare name.
+FILTER="${KASM_LDAP_SEARCH_FILTER:-(&(objectClass=user)(|($EMAIL_ATTR={0})(sAMAccountName={0})))}"
 
 MODE=run
 case "${1:-}" in

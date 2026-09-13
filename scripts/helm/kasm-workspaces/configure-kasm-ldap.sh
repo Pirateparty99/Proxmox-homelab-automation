@@ -16,6 +16,13 @@
 #   KASM_LDAP_USERS_GROUP_DN  -> All Users       (general)
 #   KASM_LDAP_ADMINS_GROUP_DN -> Administrators  (admin)
 #
+# ldap_configs.service_account_password is NOT a plaintext column. It is a
+# SQLAlchemy StringEncryptedType (AES/pkcs5), keyed by the installation_id - see
+# the encrypt_sensitive_columns migration in the api image. Writing plaintext
+# there yields a row Kasm cannot decrypt and a bind that always fails. So the
+# password is encrypted by Kasm's own code, run inside the api container, and
+# only the ciphertext is ever written.
+#
 # You are prompted for the bind password. It is tested before anything is
 # written, and never echoed or stored on disk.
 #
@@ -57,18 +64,54 @@ q() { printf "%s" "${1//\'/\'\'}"; }
 
 command -v oc >/dev/null || die "oc not found in PATH"
 oc whoami >/dev/null 2>&1 || die "oc is not authenticated - run scripts/okd/create-oc-token.sh"
-DB_POD=$(oc get pod -n "$NAMESPACE" -l app.kubernetes.io/component=db -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-[[ -n "$DB_POD" ]] || die "no database pod in namespace $NAMESPACE"
 
-# The container is named after the release, not the pod - the pod carries the
-# StatefulSet's version suffix and the container does not.
-psql_do() { oc exec -n "$NAMESPACE" "$DB_POD" -c "${RELEASE}-db" -- psql -U kasmapp -d kasm -t -A -F' | ' -c "$1" 2>/dev/null; }
+pod_for() { oc get pod -n "$NAMESPACE" -l "app.kubernetes.io/component=$1" \
+              -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' 2>/dev/null | awk '{print $1}'; }
+DB_POD=$(pod_for db);  [[ -n "$DB_POD"  ]] || die "no running database pod in namespace $NAMESPACE"
+API_POD=$(pod_for api); [[ -n "$API_POD" ]] || die "no running api pod in namespace $NAMESPACE"
+
+# Inside the db pod, postgres trusts local connections - no password needed.
+# The container is named after the release; the pod carries a version suffix.
+psql_do() { oc exec -n "$NAMESPACE" "$DB_POD" -c "${RELEASE}-db" -- \
+              psql -U kasmapp -d kasm -t -A -F' | ' -c "$1" 2>/dev/null; }
+
+# Encrypt (or decrypt) with Kasm's own key, using Kasm's own code, in the api
+# container. Only the installation_id is needed - no database connection.
+INSTALLATION_ID=""
+kasm_crypt() {  # <encrypt|decrypt> <value>   value arrives via env, never argv
+  [[ -n "$INSTALLATION_ID" ]] || INSTALLATION_ID=$(psql_do "select installation_id from installation" | head -1)
+  [[ -n "$INSTALLATION_ID" ]] || die "could not read installation_id"
+  KASM_CRYPT_OP="$1" KASM_CRYPT_VAL="$2" \
+  oc exec -i -n "$NAMESPACE" "$API_POD" -c "${RELEASE}-api-default" \
+    -- env INSTALLATION_ID="$INSTALLATION_ID" OP="$1" VAL="$2" python3 - <<'PY' 2>/dev/null
+import sys, os
+sys.path.insert(0, '/src/api_server')
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+from data.model import get_key
+from sqlalchemy_utils.types.encrypted.encrypted_type import AesEngine, StringEncryptedType
+t = StringEncryptedType(sa.VARCHAR(255), get_key, AesEngine, 'pkcs5')
+d = postgresql.dialect()
+v = os.environ['VAL']
+sys.stdout.write(t.bind_processor(d)(v) if os.environ['OP'] == 'encrypt'
+                 else t.result_processor(d, None)(v))
+PY
+}
 
 if [[ "$MODE" == show ]]; then
   log "ldap_configs"
   psql_do "select name, url, search_base, email_attribute, enabled from ldap_configs" | sed 's/^/    /'
   log "sso_to_group_mapping"
   psql_do "select g.name, m.sso_group_attributes from sso_to_group_mapping m join groups g on g.group_id = m.group_id" | sed 's/^/    /'
+  log "bind password"
+  CIPHER=$(psql_do "select service_account_password from ldap_configs where name = '$(q "$NAME")'" | head -1)
+  if [[ -z "$CIPHER" ]]; then
+    info "not set"
+  elif [[ -n "$(kasm_crypt decrypt "$CIPHER")" ]]; then
+    info "stored, and Kasm can decrypt it"
+  else
+    info "stored, but Kasm CANNOT decrypt it - re-run this script without --show"
+  fi
   exit 0
 fi
 
@@ -99,9 +142,15 @@ if [[ "$MODE" == check ]]; then
   exit 0
 fi
 
+log "Encrypting the bind password with Kasm's key"
+ENC=$(kasm_crypt encrypt "$LDAP_PASSWORD")
+unset LDAP_PASSWORD
+[[ -n "$ENC" ]] || die "encryption produced nothing"
+info "ciphertext produced (${#ENC} chars)"
+
 # Kasm's built-in groups, by name - their ids are per-deployment.
-ALL_USERS=$(psql_do "select group_id from groups where name = 'All Users' and is_system" | head -1)
-ADMINS=$(psql_do "select group_id from groups where name = 'Administrators' and is_system" | head -1)
+ALL_USERS=$(psql_do "select group_id from groups where name = 'All Users'" | head -1)
+ADMINS=$(psql_do "select group_id from groups where name = 'Administrators'" | head -1)
 [[ -n "$ALL_USERS" && -n "$ADMINS" ]] || die "could not find Kasm's built-in groups - has db-init completed?"
 
 log "Writing the LDAP configuration"
@@ -112,7 +161,7 @@ if [[ -n "$LDAP_ID" ]]; then
              auto_create_app_user=true, connection_timeout=10,
              email_attribute='$(q "$EMAIL_ATTR")',
              group_membership_filter='(|(memberOf=$(q "$USERS_DN"))(memberOf=$(q "$ADMINS_DN")))',
-             service_account_dn='$(q "$BIND_DN")', service_account_password='$(q "$LDAP_PASSWORD")'
+             service_account_dn='$(q "$BIND_DN")', service_account_password='$(q "$ENC")'
            where ldap_id = '$LDAP_ID'" >/dev/null
   info "updated existing config \"$NAME\""
 else
@@ -121,12 +170,11 @@ else
        search_subtree, service_account_dn, service_account_password, connection_timeout,
        group_membership_filter)
     values ('$(q "$NAME")', true, '$(q "$URL")', true, '$(q "$EMAIL_ATTR")', '$(q "$BASE_DN")',
-       '(objectClass=user)', true, '$(q "$BIND_DN")', '$(q "$LDAP_PASSWORD")', 10,
+       '(objectClass=user)', true, '$(q "$BIND_DN")', '$(q "$ENC")', 10,
        '(|(memberOf=$(q "$USERS_DN"))(memberOf=$(q "$ADMINS_DN")))')
     returning ldap_id" | head -1)
   info "created config \"$NAME\""
 fi
-unset LDAP_PASSWORD
 [[ -n "$LDAP_ID" ]] || die "no ldap_id came back"
 
 log "Mapping AD groups onto Kasm groups"
@@ -146,7 +194,7 @@ map() {  # <kasm group id> <ad group dn> <label>
 map "$ALL_USERS" "$USERS_DN"  "kasm-users  -> All Users"
 map "$ADMINS"    "$ADMINS_DN" "kasm-admins -> Administrators"
 
-# The API and manager read this at startup, so they have to be restarted before
+# The api and manager read this at startup, so they have to be restarted before
 # a login will use it.
 log "Restarting the components that read it"
 oc rollout restart deployment -n "$NAMESPACE" -l app.kubernetes.io/component=api >/dev/null 2>&1 || true

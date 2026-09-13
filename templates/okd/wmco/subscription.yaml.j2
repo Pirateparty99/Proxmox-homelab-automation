@@ -1,11 +1,11 @@
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: windows-machine-config-operator
+  name: {{ package }}
   namespace: {{ namespace }}
 spec:
   channel: {{ channel }}
-  name: windows-machine-config-operator
+  name: {{ package }}
   source: {{ catalog_source }}
   sourceNamespace: {{ catalog_source_namespace }}
   installPlanApproval: Automatic

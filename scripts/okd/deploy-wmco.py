@@ -13,9 +13,13 @@ Requires a working kubeconfig context with cluster-admin privileges and
 OLM already installed on the cluster.
 
 Usage:
-    python3 deploy_wmco.py [--namespace NS] [--channel CH]
+    python3 deploy_wmco.py [--namespace NS] [--package PKG] [--channel CH]
                             [--catalog-source SRC] [--catalog-source-namespace NS]
                             [--timeout SECONDS] [--dry-run]
+
+Defaults target OKD's community-operators catalog. For OpenShift with a Red Hat
+subscription, pass --package windows-machine-config-operator --channel stable
+--catalog-source redhat-operators.
 
 Dependencies:
     ./bootstrap.py --dependencies      (installs requirements.txt)
@@ -122,7 +126,7 @@ def apply_custom_object(manifest: dict, version: str, plural: str, namespace: st
             raise SystemExit(1)
 
 
-def wait_for_installed_csv(namespace: str, timeout: int) -> str:
+def wait_for_installed_csv(namespace: str, package: str, timeout: int) -> str:
     log(f"Waiting for Subscription to report an installed CSV (up to {timeout}s)...")
     api = client.CustomObjectsApi()
     deadline = time.time() + timeout
@@ -130,12 +134,20 @@ def wait_for_installed_csv(namespace: str, timeout: int) -> str:
         try:
             sub = api.get_namespaced_custom_object(
                 group=OLM_GROUP, version=SUBSCRIPTION_VERSION, namespace=namespace,
-                plural="subscriptions", name="windows-machine-config-operator",
+                plural="subscriptions", name=package,
             )
             csv = sub.get("status", {}).get("installedCSV")
             if csv:
                 ok(f"CSV installed: {csv}")
                 return csv
+            # OLM reports an unresolvable subscription here rather than failing
+            # outright, and it would otherwise just look like a slow install.
+            for cond in sub.get("status", {}).get("conditions", []):
+                if cond.get("type") == "ResolutionFailed" and cond.get("status") == "True":
+                    err(f"OLM cannot resolve the subscription: {cond.get('message')}")
+                    err("Check --package/--channel/--catalog-source against: "
+                        f"oc get packagemanifest -n {namespace}")
+                    raise SystemExit(1)
         except ApiException as e:
             if e.status != 404:
                 err(f"Error querying subscription: {e}")
@@ -171,30 +183,52 @@ def wait_for_csv_succeeded(namespace: str, csv: str, timeout: int) -> None:
     raise SystemExit(1)
 
 
-def wait_for_deployment(namespace: str, timeout: int) -> None:
-    log("Waiting for the WMCO deployment to become available...")
+def csv_deployment_names(namespace: str, csv: str) -> list[str]:
+    """The deployments a CSV installs. Read from the CSV rather than assumed,
+    because the community package and the Red Hat one do not name them alike."""
+    api = client.CustomObjectsApi()
+    obj = api.get_namespaced_custom_object(
+        group=OLM_GROUP, version="v1alpha1", namespace=namespace,
+        plural="clusterserviceversions", name=csv,
+    )
+    deployments = (obj.get("spec", {}).get("install", {})
+                      .get("spec", {}).get("deployments", []))
+    names = [d["name"] for d in deployments if d.get("name")]
+    if not names:
+        err(f"CSV '{csv}' declares no deployments.")
+        raise SystemExit(1)
+    return names
+
+
+def wait_for_deployment(namespace: str, name: str, timeout: int) -> None:
+    log(f"Waiting for deployment '{name}' to become available...")
     apps = client.AppsV1Api()
     deadline = time.time() + timeout
-    name = "windows-machine-config-operator"
     while time.time() < deadline:
         try:
             dep = apps.read_namespaced_deployment_status(name=name, namespace=namespace)
             conditions = dep.status.conditions or []
             if any(c.type == "Available" and c.status == "True" for c in conditions):
-                ok("WMCO deployment is available.")
+                ok(f"Deployment '{name}' is available.")
                 return
         except ApiException as e:
             if e.status != 404:
                 err(f"Error querying deployment: {e}")
                 raise SystemExit(1)
         time.sleep(5)
-    err("Timed out waiting for the WMCO deployment to become available.")
+    err(f"Timed out waiting for deployment '{name}' to become available.")
     raise SystemExit(1)
 
 
-def print_pods(namespace: str) -> None:
+def print_pods(namespace: str, deployment: str) -> None:
+    """Selector comes from the deployment, so this does not depend on the
+    operator using any particular label convention."""
+    apps = client.AppsV1Api()
     v1 = client.CoreV1Api()
-    pods = v1.list_namespaced_pod(namespace=namespace, label_selector="name=windows-machine-config-operator")
+    dep = apps.read_namespaced_deployment(name=deployment, namespace=namespace)
+    match = (dep.spec.selector.match_labels or {}) if dep.spec.selector else {}
+    selector = ",".join(f"{k}={v}" for k, v in match.items())
+    pods = v1.list_namespaced_pod(namespace=namespace, label_selector=selector)
     for pod in pods.items:
         print(f"  {pod.metadata.name}\t{pod.status.phase}")
 
@@ -224,8 +258,14 @@ Docs: https://docs.okd.io/latest/windows_containers/enabling-windows-container-w
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Deploy WMCO to OpenShift/OKD via the Kubernetes Python client.")
     p.add_argument("--namespace", default="openshift-windows-machine-config-operator")
-    p.add_argument("--channel", default="stable")
-    p.add_argument("--catalog-source", default="redhat-operators")
+    # OKD ships the community catalog; redhat-operators is OpenShift-only and
+    # needs a Red Hat pull secret, so pointing at it here fails to resolve with
+    # "no operators found from catalog redhat-operators". The community build is
+    # a differently named package, and its only channel is preview.
+    p.add_argument("--package", default="community-windows-machine-config-operator",
+                   help="operator package name in the catalog")
+    p.add_argument("--channel", default="preview")
+    p.add_argument("--catalog-source", default="community-operators")
     p.add_argument("--catalog-source-namespace", default="openshift-marketplace")
     p.add_argument("--timeout", type=int, default=300, help="Seconds to wait for each readiness check")
     p.add_argument("--dry-run", action="store_true", help="Render and print manifests without applying them")
@@ -236,6 +276,7 @@ def main() -> None:
     args = parse_args()
     context = {
         "namespace": args.namespace,
+        "package": args.package,
         "channel": args.channel,
         "catalog_source": args.catalog_source,
         "catalog_source_namespace": args.catalog_source_namespace,
@@ -258,11 +299,14 @@ def main() -> None:
     apply_custom_object(operatorgroup_manifest, OPERATORGROUP_VERSION, "operatorgroups", args.namespace)
     apply_custom_object(subscription_manifest, SUBSCRIPTION_VERSION, "subscriptions", args.namespace)
 
-    csv = wait_for_installed_csv(args.namespace, args.timeout)
+    csv = wait_for_installed_csv(args.namespace, args.package, args.timeout)
     wait_for_csv_succeeded(args.namespace, csv, args.timeout)
-    wait_for_deployment(args.namespace, args.timeout)
 
-    print_pods(args.namespace)
+    deployments = csv_deployment_names(args.namespace, csv)
+    for deployment in deployments:
+        wait_for_deployment(args.namespace, deployment, args.timeout)
+
+    print_pods(args.namespace, deployments[0])
     print_post_install_notes(args.namespace)
 
 

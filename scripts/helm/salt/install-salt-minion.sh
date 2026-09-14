@@ -108,13 +108,6 @@ if [[ "$MODE" == local ]]; then
   bash -c "$MINION_SETUP"
 else
   HOST="${SALT_MINION_HOST:?set SALT_MINION_HOST in config.env, or use --local}"
-  # A dotted value with fewer than four octets is almost certainly a typo, but
-  # it is a legal address: the kernel expands 192.168.247 to 192.168.0.247, so
-  # the only symptom is a connection timeout against a host that never existed.
-  if [[ "$HOST" =~ ^[0-9]+(\.[0-9]+)*$ && ! "$HOST" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
-    die "SALT_MINION_HOST='${HOST}' is numeric but not four octets.
-    Written like that it resolves somewhere else entirely - check config.env."
-  fi
   USER="${SALT_MINION_SSH_USER:-root}"
   log "Installing salt-minion ${SALT_VER} on ${HOST}"
   info "master: ${MASTER}:${PUBLISH_PORT}"

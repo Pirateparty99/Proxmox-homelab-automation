@@ -110,7 +110,11 @@ else
   HOST="${SALT_MINION_HOST:?set SALT_MINION_HOST in config.env, or use --local}"
   USER="${SALT_MINION_SSH_USER:-root}"
   SSH_KEY="${SALT_MINION_SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
+  # IdentitiesOnly: without it ssh offers every key the agent holds and the
+  # server may reject on algorithm before ever reaching the one installed here.
+  SSH_ID="${SSH_KEY%.pub}"
   ssh_ok() { ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+                 -o IdentitiesOnly=yes -i "$SSH_ID" \
                  "${USER}@${HOST}" true 2>/dev/null; }
   log "Installing salt-minion ${SALT_VER} on ${HOST}"
   info "master: ${MASTER}:${PUBLISH_PORT}"
@@ -127,24 +131,39 @@ else
     Or point SALT_MINION_SSH_KEY at an existing .pub file."
     info "key: ${SSH_KEY}"
     info "ssh will prompt you for ${USER}'s password"
-    ssh-copy-id -i "$SSH_KEY" -o StrictHostKeyChecking=no "${USER}@${HOST}" \
-      || die "ssh-copy-id failed - check the account and password"
-    ssh_ok || die "the key was installed but key-based login still fails.
-    sshd logs the actual reason. On the VM:
+    # Not ssh-copy-id: on RHEL it installs the key and still leaves you locked
+    # out. Anything a shell creates under a home directory is labelled
+    # user_home_t, and sshd will not read authorized_keys unless it is
+    # ssh_home_t - so the file is plainly there and plainly ignored.
+    # ssh-copy-id cannot relabel, so the same authenticated session does the
+    # whole job: append the key, fix the modes, restore the SELinux context.
+    ssh -o StrictHostKeyChecking=no "${USER}@${HOST}" '
+      set -e
+      umask 077
+      mkdir -p ~/.ssh
+      cat >> ~/.ssh/authorized_keys
+      # Duplicates accumulate across retries and sshd stops at the first match,
+      # so they are harmless - but tidy them up anyway.
+      sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys
+      chmod 700 ~/.ssh
+      chmod 600 ~/.ssh/authorized_keys
+      chmod go-w ~
+      command -v restorecon >/dev/null && restorecon -R ~/.ssh || true
+    ' < "$SSH_KEY" || die "could not install the key - check the account and password"
+    ssh_ok || die "the key was installed and key-based login still fails.
+    sshd logs the reason - on the VM:
 
       sudo journalctl -u sshd -n 30 --no-pager
 
-    On RHEL the usual causes are the SELinux label on ~/.ssh, or sshd's
-    StrictModes rejecting a group-writable home. Both are fixed by:
-
-      restorecon -R -v ~/.ssh
-      chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && chmod go-w ~
-
-    Then re-run this script."
+    If it says 'signature algorithm ... not in PubkeyAcceptedAlgorithms', the
+    key type is the problem rather than the key: RHEL 10's crypto policy
+    excludes ssh-ed25519. Point SALT_MINION_SSH_KEY at an RSA key
+    (ssh-keygen -t rsa -b 4096) instead of changing the policy."
     info "key authorized"
   fi
 
   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+      -o IdentitiesOnly=yes -i "$SSH_ID" \
       "${USER}@${HOST}" "bash -s" <<< "$MINION_SETUP"
 fi
 

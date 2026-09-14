@@ -211,6 +211,9 @@ def derive(cfg):
     # Charts are cached here rather than under rendered/, which bootstrap.py
     # empties and regenerates - a pulled chart is a fetched artifact, not a
     # rendered one, and re-downloading it on every render would be wasteful.
+    # Routes live on the cluster's wildcard apps domain, so the hostname follows
+    # from it rather than being spelled out per site.
+    default("KAFDROP_FQDN", "kafdrop.%s" % cfg.get("OKD_APPS_DOMAIN", ""))
     default("CHART_CACHE", os.path.join(REPO_ROOT, "charts"))
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))

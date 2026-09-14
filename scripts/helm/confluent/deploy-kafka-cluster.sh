@@ -111,3 +111,8 @@ cat <<EOF
       oc exec -n ${NAMESPACE} ${KAFKA_NAME}-0 -- kafka-topics \\
         --bootstrap-server localhost:9092 --create --topic demo
 EOF
+
+# Kafdrop last: it connects to the brokers at startup, so it is only meaningful
+# once they are serving - and its broker list is the readable confirmation that
+# everything above actually works.
+"$(dirname "${BASH_SOURCE[0]}")/deploy-kafdrop.sh"

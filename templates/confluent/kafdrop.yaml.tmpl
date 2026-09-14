@@ -1,0 +1,101 @@
+# Kafdrop - a read-only web UI for the Kafka cluster, used here to confirm at a
+# glance that brokers, topics and consumer groups are healthy.
+#
+# Rendered from config.env by bootstrap.py. Edit the template, not rendered/.
+#
+# Plain manifests rather than a Helm chart: Kafdrop publishes no hosted chart,
+# and this is three small objects that need an OpenShift Route anyway.
+#
+# No securityContext is set. Kafdrop is a JVM app that does not care which UID it
+# runs as, so letting restricted-v2 assign one from the namespace range avoids
+# the SCC rejection that a hardcoded UID causes - the same problem the Confluent
+# CRs hit. See templates/confluent/kafka-cluster.yaml.tmpl.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafdrop
+  namespace: {{ CONFLUENT_NAMESPACE | required("CONFLUENT_NAMESPACE") }}
+  labels:
+    app: kafdrop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafdrop
+  template:
+    metadata:
+      labels:
+        app: kafdrop
+    spec:
+      containers:
+        - name: kafdrop
+          image: {{ KAFDROP_IMAGE | required("KAFDROP_IMAGE") }}
+          ports:
+            - name: http
+              containerPort: 9000
+          env:
+            # The Kafka CR creates a headless service of the same name, so this
+            # is the in-cluster bootstrap endpoint for the brokers.
+            - name: KAFKA_BROKERCONNECT
+              value: "{{ KAFKA_NAME | required("KAFKA_NAME") }}.{{ CONFLUENT_NAMESPACE }}.svc.cluster.local:9092"
+            # Kafdrop defaults to writing its own temp files under /tmp, which is
+            # writable for any UID; JVM heap is capped so it stays small next to
+            # the brokers.
+            - name: JVM_OPTS
+              value: "-Xms128M -Xmx512M"
+            - name: SERVER_SERVLET_CONTEXTPATH
+              value: "/"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafdrop
+  namespace: {{ CONFLUENT_NAMESPACE }}
+  labels:
+    app: kafdrop
+spec:
+  selector:
+    app: kafdrop
+  ports:
+    - name: http
+      port: 9000
+      targetPort: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kafdrop
+  namespace: {{ CONFLUENT_NAMESPACE }}
+  labels:
+    app: kafdrop
+spec:
+  host: {{ KAFDROP_FQDN | required("KAFDROP_FQDN") }}
+  to:
+    kind: Service
+    name: kafdrop
+  port:
+    targetPort: http
+  tls:
+    # Edge termination: the router serves TLS with the cluster's wildcard
+    # certificate and talks plain HTTP to Kafdrop, which serves no TLS of its own.
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

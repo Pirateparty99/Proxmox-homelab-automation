@@ -12,13 +12,13 @@
 # node address.
 #
 # Usage:
-#   scripts/salt/deploy-salt-helm.sh
-#   scripts/salt/deploy-salt-helm.sh --dry-run
-#   scripts/salt/deploy-salt-helm.sh --status
+#   scripts/helm/salt/deploy-salt-helm.sh
+#   scripts/helm/salt/deploy-salt-helm.sh --dry-run
+#   scripts/helm/salt/deploy-salt-helm.sh --status
 #
 set -euo pipefail
 
-. "$(dirname "${BASH_SOURCE[0]}")/../../lib/config.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../../../lib/config.sh"
 
 CHART="${SALT_CHART_PATH:?set SALT_CHART_PATH in config.env}"
 NAMESPACE="${SALT_NAMESPACE:?set SALT_NAMESPACE in config.env}"
@@ -69,4 +69,4 @@ log "Master reachable at"
 info "in-cluster:  ${RELEASE}.${NAMESPACE}.svc.cluster.local:4505"
 info "from a VM:   ${SALT_MASTER_ADDR:-<a node address>}:${SALT_NODEPORT_PUBLISH:-30505}"
 info ""
-info "Install a minion with: scripts/salt/install-salt-minion.sh"
+info "Install a minion with: scripts/helm/salt/install-salt-minion.sh"

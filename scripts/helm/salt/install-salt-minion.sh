@@ -12,14 +12,14 @@
 # the master before it can do anything.
 #
 # Usage:
-#   scripts/salt/install-salt-minion.sh                 # over ssh to SALT_MINION_HOST
-#   scripts/salt/install-salt-minion.sh --local         # on the VM itself
-#   scripts/salt/install-salt-minion.sh --accept        # accept its key on the master
-#   scripts/salt/install-salt-minion.sh --status
+#   scripts/helm/salt/install-salt-minion.sh                 # over ssh to SALT_MINION_HOST
+#   scripts/helm/salt/install-salt-minion.sh --local         # on the VM itself
+#   scripts/helm/salt/install-salt-minion.sh --accept        # accept its key on the master
+#   scripts/helm/salt/install-salt-minion.sh --status
 #
 set -euo pipefail
 
-. "$(dirname "${BASH_SOURCE[0]}")/../../lib/config.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../../../lib/config.sh"
 
 NAMESPACE="${SALT_NAMESPACE:-salt}"
 RELEASE="${SALT_RELEASE:-salt}"
@@ -114,4 +114,4 @@ fi
 log "Next"
 info "The minion is running but its key is not accepted yet, so it can do"
 info "nothing until you accept it:"
-info "  scripts/salt/install-salt-minion.sh --accept"
+info "  scripts/helm/salt/install-salt-minion.sh --accept"

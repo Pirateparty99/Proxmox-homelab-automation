@@ -32,13 +32,16 @@ log()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
-MODE="${1:-remote}"
-case "$MODE" in
+# Switch on the argument itself, not on a defaulted copy: defaulting first sent
+# the no-argument case into *) where $1 is unbound, so the documented usage
+# failed under `set -u` before doing anything.
+MODE=remote
+case "${1:-}" in
+  "")       MODE=remote ;;
   --local)  MODE=local ;;
   --accept) MODE=accept ;;
   --status) MODE=status ;;
-  "")       MODE=remote ;;
-  *)        die "unknown argument: $1" ;;
+  *)        die "unknown argument: ${1}" ;;
 esac
 
 if [[ "$MODE" == accept || "$MODE" == status ]]; then
@@ -105,10 +108,30 @@ if [[ "$MODE" == local ]]; then
   bash -c "$MINION_SETUP"
 else
   HOST="${SALT_MINION_HOST:?set SALT_MINION_HOST in config.env, or use --local}"
+  # A dotted value with fewer than four octets is almost certainly a typo, but
+  # it is a legal address: the kernel expands 192.168.247 to 192.168.0.247, so
+  # the only symptom is a connection timeout against a host that never existed.
+  if [[ "$HOST" =~ ^[0-9]+(\.[0-9]+)*$ && ! "$HOST" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+    die "SALT_MINION_HOST='${HOST}' is numeric but not four octets.
+    Written like that it resolves somewhere else entirely - check config.env."
+  fi
   USER="${SALT_MINION_SSH_USER:-root}"
   log "Installing salt-minion ${SALT_VER} on ${HOST}"
   info "master: ${MASTER}:${PUBLISH_PORT}"
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "${USER}@${HOST}" "bash -s" <<< "$MINION_SETUP"
+
+  # Key-based ssh only: this script never handles a password, and a fresh RHEL
+  # install offers password auth alone. Checked up front so the failure names
+  # the fix rather than surfacing as a bare "Permission denied" mid-install.
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+       "${USER}@${HOST}" true 2>/dev/null; then
+    die "cannot log in to ${USER}@${HOST} with a key.
+    Authorize one - it will ask you for the account password, not this script:
+      ssh-copy-id ${USER}@${HOST}
+    Then re-run. Or run this on the VM itself with --local."
+  fi
+
+  ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+      "${USER}@${HOST}" "bash -s" <<< "$MINION_SETUP"
 fi
 
 log "Next"

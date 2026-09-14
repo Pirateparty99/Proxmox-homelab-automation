@@ -92,5 +92,9 @@ fi
 log "Master reachable at"
 info "in-cluster:  ${RELEASE}.${NAMESPACE}.svc.cluster.local:4505"
 info "from a VM:   ${SALT_MASTER_ADDR:-<a node address>}:${SALT_NODEPORT_PUBLISH:-30505}"
+if [[ "${SALT_GUI_ENABLED:-false}" == "true" && -n "${SALT_FQDN:-}" ]]; then
+  # /app, not /: rest_cherrypy serves the API at the root and the UI at /app.
+  info "web UI:      https://${SALT_FQDN}/app  (sign in with eauth type 'ldap')"
+fi
 info ""
 info "Install a minion with: scripts/helm/salt/install-salt-minion.sh"

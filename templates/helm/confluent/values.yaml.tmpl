@@ -1,0 +1,36 @@
+# Confluent for Kubernetes (CFK) operator - values for an OKD/OpenShift cluster.
+#
+# Rendered from config.env by bootstrap.py. Edit the template, not rendered/.
+#
+# Only the settings that differ from the chart's defaults are here; everything
+# else is left alone deliberately, so upgrading the chart picks up its new
+# defaults rather than whatever they happened to be when this was written.
+
+## The chart hardcodes runAsUser/fsGroup 1001. OpenShift's restricted-v2 SCC
+## allocates each namespace its own UID range and rejects a pod asking for a
+## fixed UID outside it, which shows up as the pod never being admitted rather
+## than as a clear error. Turning this off lets the SCC assign a UID from the
+## namespace range, which is what OpenShift expects. Do not "fix" this by
+## granting anyuid - that weakens the namespace for every workload in it.
+podSecurity:
+  enabled: false
+
+## Adds the route.openshift.io API group to the operator's role, so it can
+## manage Routes for the Confluent components. Already the chart default;
+## stated explicitly because it is the one thing here that is OpenShift-only.
+clusterRole:
+  openshift: true
+
+## Watch only the release namespace. The operator picks up Confluent CRs
+## (Kafka, Connect, SchemaRegistry...) created in {{ CONFLUENT_NAMESPACE }}.
+## Set namespaceList to watch others, which also requires namespaced: false.
+namespaced: true
+
+## The operator image is public on docker.io, so the chart's default reference
+## to a "confluent-registry" pull secret would point at a Secret that does not
+## exist. Cleared rather than created, since nothing here needs to authenticate.
+imagePullSecretRef: ""
+
+## Single replica: more than one turns on leader election, which is only worth
+## the extra resource for an HA control plane.
+replicas: 1

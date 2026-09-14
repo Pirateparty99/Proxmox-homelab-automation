@@ -150,9 +150,10 @@ done
 info "privileged SCC granted in both namespaces"
 
 # ----------------------------------------------------------------- helm charts
-log "OKD: helm repo"
-run "helm repo add ceph-csi https://ceph.github.io/csi-charts >/dev/null 2>&1 || true"
-run "helm repo update >/dev/null 2>&1"
+# chart_args resolves each chart to the local cache when scripts/helm/pull-charts.sh
+# has populated it, and to --repo otherwise - so no helm repo is registered here.
+read -ra RBD_CHART <<< "$(chart_args ceph-csi-rbd)"
+read -ra FS_CHART <<< "$(chart_args ceph-csi-cephfs)"
 
 log "OKD: ceph-csi-rbd -> StorageClass '${SC_RBD}'"
 RBD_ARGS=(
@@ -170,8 +171,8 @@ RBD_ARGS=(
   --set "storageClass.allowVolumeExpansion=true"
   --set "provisioner.replicaCount=1"
 )
-[[ -n "$CHART_VERSION_RBD" ]] && RBD_ARGS+=(--version "$CHART_VERSION_RBD")
-run "helm upgrade --install ceph-csi-rbd ceph-csi/ceph-csi-rbd ${RBD_ARGS[*]} >/dev/null"
+[[ -n "$CHART_VERSION_RBD" && "${RBD_CHART[0]}" != *.tgz ]] && RBD_ARGS+=(--version "$CHART_VERSION_RBD")
+run "helm upgrade --install ceph-csi-rbd ${RBD_CHART[*]} ${RBD_ARGS[*]} >/dev/null"
 info "deployed"
 
 log "OKD: ceph-csi-cephfs -> StorageClass '${SC_CEPHFS}'"
@@ -189,8 +190,8 @@ FS_ARGS=(
   --set "storageClass.allowVolumeExpansion=true"
   --set "provisioner.replicaCount=1"
 )
-[[ -n "$CHART_VERSION_CEPHFS" ]] && FS_ARGS+=(--version "$CHART_VERSION_CEPHFS")
-run "helm upgrade --install ceph-csi-cephfs ceph-csi/ceph-csi-cephfs ${FS_ARGS[*]} >/dev/null"
+[[ -n "$CHART_VERSION_CEPHFS" && "${FS_CHART[0]}" != *.tgz ]] && FS_ARGS+=(--version "$CHART_VERSION_CEPHFS")
+run "helm upgrade --install ceph-csi-cephfs ${FS_CHART[*]} ${FS_ARGS[*]} >/dev/null"
 info "deployed"
 
 # ---------------------------------------------------------------------- verify

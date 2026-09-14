@@ -4,6 +4,10 @@ config.env
 # Templates render here at deploy time; everything in it is site-specific.
 /rendered/
 
+# Helm charts mirrored by scripts/helm/pull-charts.sh. Fetched artifacts, not
+# source: re-creatable from bootstrap.py's HELM_CHARTS and the pinned versions.
+/charts/
+
 # Certificates, keys and anything else pulled from the domain.
 /secrets/
 *.crt

@@ -19,5 +19,6 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 # checks whether the schema is already at head and exits if so.
 kubectl delete job "${RELEASE_NAME}-db-init" -n "$NAMESPACE" --ignore-not-found
 
-helm upgrade --install "${RELEASE_NAME}" oci://registry-1.docker.io/kasmweb/kasm-helm \
-  --version "${KASM_CHART_VERSION}" -n "${NAMESPACE}" -f "${VALUES}"
+read -ra CHART <<< "$(chart_args kasm-helm)"
+helm upgrade --install "${RELEASE_NAME}" "${CHART[@]}" \
+  -n "${NAMESPACE}" -f "${VALUES}"

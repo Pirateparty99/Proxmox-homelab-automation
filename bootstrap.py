@@ -7,6 +7,8 @@ to the shell scripts.
     ./bootstrap.py --list          show what would be rendered
     ./bootstrap.py --export        emit `export K=V` lines for a shell to eval
     ./bootstrap.py --json          emit the resolved config as JSON
+    ./bootstrap.py --charts        list the Helm charts and their pinned versions
+    ./bootstrap.py --pull-charts   mirror those charts into charts/
     ./bootstrap.py --dependencies  install missing Python packages first
     ./bootstrap.py --credentials   also obtain any missing credential in secrets/
 
@@ -80,6 +82,34 @@ DEPENDENCIES = [
     ("kubernetes", "scripts/okd/deploy-wmco.py"),
 ]
 REQUIREMENTS = os.path.join(REPO_ROOT, "requirements.txt")
+
+# Every Helm chart this repo deploys, as (chart name, where it comes from, which
+# config key pins it). `helm pull` accepts both an OCI reference and an https
+# repo URL, so one table covers both kinds. scripts/helm/pull-charts.sh mirrors
+# these into CHART_CACHE, and lib/config.sh's chart_ref prefers that copy - so a
+# deploy does not depend on the chart's origin still being reachable, and every
+# cluster gets byte-identical charts. An empty version means "whatever is
+# current", which is only resolved when the chart is actually pulled.
+HELM_CHARTS = [
+    {"chart": "cert-manager",
+     "source": "oci://quay.io/jetstack/charts/cert-manager",
+     "version_key": "CERT_MANAGER_VERSION"},
+    {"chart": "kasm-helm",
+     "source": "oci://registry-1.docker.io/kasmweb/kasm-helm",
+     "version_key": "KASM_CHART_VERSION"},
+    {"chart": "adcs-issuer",
+     "source": "https://djkormo.github.io/adcs-issuer/",
+     "version_key": "ADCS_ISSUER_VERSION"},
+    {"chart": "ceph-csi-rbd",
+     "source": "https://ceph.github.io/csi-charts",
+     "version_key": "CHART_VERSION_RBD"},
+    {"chart": "ceph-csi-cephfs",
+     "source": "https://ceph.github.io/csi-charts",
+     "version_key": "CHART_VERSION_CEPHFS"},
+    {"chart": "confluent-for-kubernetes",
+     "source": "https://packages.confluent.io/helm",
+     "version_key": "CONFLUENT_CHART_VERSION"},
+]
 
 # Credentials are not rendered. They are obtained once from the live systems and
 # written into secrets/, so they are listed here rather than templated: as
@@ -178,6 +208,13 @@ def derive(cfg):
     # Direct membership only: member:1.2.840.113556.1.4.1941:={0} would also walk
     # nested groups, which can grant admin through an unrelated nesting.
     default("KASM_LDAP_GROUP_FILTER", "(&(objectClass=group)(member={0}))")
+    # Charts are cached here rather than under rendered/, which bootstrap.py
+    # empties and regenerates - a pulled chart is a fetched artifact, not a
+    # rendered one, and re-downloading it on every render would be wasteful.
+    # Routes live on the cluster's wildcard apps domain, so the hostname follows
+    # from it rather than being spelled out per site.
+    default("KAFDROP_FQDN", "kafdrop.%s" % cfg.get("OKD_APPS_DOMAIN", ""))
+    default("CHART_CACHE", os.path.join(REPO_ROOT, "charts"))
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))
     # Same login, different node: PVE_API_HOST is whichever node hosts the DC VM,
@@ -356,6 +393,35 @@ def fetch_credentials(cfg, dry_run=False):
                      % (cred["script"], exc.returncode))
 
 
+def chart_status(cfg):
+    """(chart, cached filename or None, version) for each chart in HELM_CHARTS."""
+    cache = cfg.get("CHART_CACHE", "")
+    out = []
+    for entry in HELM_CHARTS:
+        chart = entry["chart"]
+        version = cfg.get(entry["version_key"], "")
+        found = sorted(glob.glob(os.path.join(cache, "%s-*.tgz" % chart)))
+        if version:
+            # A pinned chart is only satisfied by that exact version; an older
+            # cached copy is worse than none, because it would be used silently.
+            exact = os.path.join(cache, "%s-%s.tgz" % (chart, version))
+            found = [exact] if os.path.isfile(exact) else []
+        out.append((chart, os.path.basename(found[-1]) if found else None, version))
+    return out
+
+
+def pull_charts(dry_run=False):
+    """Hand off to the pull script, which owns the helm invocations."""
+    script = os.path.join(REPO_ROOT, "scripts", "helm", "pull-charts.sh")
+    if not os.path.isfile(script):
+        sys.exit("%s is missing." % script)
+    cmd = [script] + (["--list"] if dry_run else [])
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as exc:
+        sys.exit("\n%s failed (exit %d)." % (script, exc.returncode))
+
+
 def dependency_status():
     """(module, present, what needs it) for each third-party module."""
     importlib.invalidate_caches()
@@ -411,6 +477,10 @@ def main():
     ap.add_argument("--list", action="store_true", help="show what would be rendered")
     ap.add_argument("--export", action="store_true", help="emit shell export lines")
     ap.add_argument("--json", action="store_true", help="emit the resolved config as JSON")
+    ap.add_argument("--pull-charts", action="store_true",
+                    help="mirror the Helm charts into CHART_CACHE (needs network)")
+    ap.add_argument("--charts", action="store_true",
+                    help="emit the Helm chart table as name/source/version TSV")
     ap.add_argument("--dependencies", action="store_true",
                     help="install missing Python packages from requirements.txt")
     ap.add_argument("--credentials", action="store_true",
@@ -425,6 +495,14 @@ def main():
     cfg = derive(load_config(args.config))
     cfg["RENDER_DIR"] = args.out
     cfg["CONFIG_FILE"] = args.config
+
+    if args.charts:
+        # Tab separated so the shell can read it without quoting games; a chart
+        # whose version key is unset prints an empty third field, meaning latest.
+        for entry in HELM_CHARTS:
+            print("%s\t%s\t%s" % (entry["chart"], entry["source"],
+                                   cfg.get(entry["version_key"], "")))
+        return
 
     if args.json:
         print(json.dumps(cfg, indent=2, sort_keys=True))
@@ -462,6 +540,14 @@ def main():
         if absent:
             print("\n  missing Python packages: %s" % ", ".join(absent))
             print("  run ./bootstrap.py --dependencies to install them")
+
+    if args.pull_charts:
+        pull_charts(dry_run=args.list)
+    elif not args.quiet:
+        missing = [c for c, cached, _ in chart_status(cfg) if cached is None]
+        if missing:
+            print("\n  charts not cached: %s" % ", ".join(missing))
+            print("  run ./bootstrap.py --pull-charts to mirror them locally")
 
     if args.credentials:
         fetch_credentials(cfg, dry_run=args.list)

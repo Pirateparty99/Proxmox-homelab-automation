@@ -50,6 +50,30 @@ DEPLOY_ARGS=(
   --set "service.nodePorts.ret=${SALT_NODEPORT_RET:-30506}"
   --set "image.tag=${SALT_VERSION:-}"
 )
+
+# The UI is served by salt-api, so it needs the api on. The Route carries only
+# the api - 4505/4506 are raw TCP and stay on the NodePort above.
+if [[ "${SALT_API_ENABLED:-false}" == "true" ]]; then
+  DEPLOY_ARGS+=(--set "api.enabled=true")
+  [[ "${SALT_GUI_ENABLED:-false}" == "true" ]] && DEPLOY_ARGS+=(--set "saltgui.enabled=true")
+  if [[ -n "${SALT_FQDN:-}" ]]; then
+    DEPLOY_ARGS+=(--set "route.enabled=true" --set "route.host=${SALT_FQDN}")
+  fi
+  # Only wire up external_auth once the Secret exists: without the bind
+  # password salt-api would start and refuse every login, which looks like a
+  # credential problem rather than a missing Secret.
+  if oc get secret "${SALT_LDAP_SECRET:-salt-ldap}" -n "$NAMESPACE" >/dev/null 2>&1; then
+    DEPLOY_ARGS+=(
+      --set "externalAuth.enabled=true"
+      --set "externalAuth.existingSecret=${SALT_LDAP_SECRET:-salt-ldap}"
+      --set-json "externalAuth.config={\"ldap\":{\"${SALT_LDAP_ADMINS_GROUP_DN}%\":[\".*\",\"@runner\",\"@wheel\",\"@jobs\"]}}"
+    )
+    info "LDAP auth: ${SALT_LDAP_ADMINS_GROUP_DN}"
+  else
+    info "no ${SALT_LDAP_SECRET:-salt-ldap} Secret - the API will have no way to"
+    info "authenticate anyone. Run scripts/helm/salt/configure-salt-ldap.sh first."
+  fi
+fi
 [[ "${1:-}" == "--dry-run" ]] && DEPLOY_ARGS+=(--dry-run) || DEPLOY_ARGS+=(--wait)
 
 "$REPO_ROOT/scripts/helm/helm-deploy.sh" "${DEPLOY_ARGS[@]}"

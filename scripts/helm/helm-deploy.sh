@@ -44,7 +44,11 @@ while [[ $# -gt 0 ]]; do
     --release)    RELEASE="$2"; shift 2 ;;
     --namespace)  NAMESPACE="$2"; shift 2 ;;
     --values)     VALUES+=("$2"); shift 2 ;;
-    --set)        SETS+=("$2"); shift 2 ;;
+    --set)        SETS+=(--set "$2"); shift 2 ;;
+    # A value whose key or content contains commas or dots - an LDAP DN, say -
+    # cannot go through --set, which treats both as structure.
+    --set-json)   SETS+=(--set-json "$2"); shift 2 ;;
+    --set-string) SETS+=(--set-string "$2"); shift 2 ;;
     --timeout)    TIMEOUT="$2"; shift 2 ;;
     --no-create-namespace) CREATE_NS=0; shift ;;
     --wait)       WAIT=1; shift ;;
@@ -75,7 +79,8 @@ read -ra CHART_REF <<< "$(chart_args "$CHART")"
 
 HELM_ARGS=(--namespace "$NAMESPACE")
 for f in "${VALUES[@]}"; do HELM_ARGS+=(--values "$f"); done
-for kv in "${SETS[@]}"; do HELM_ARGS+=(--set "$kv"); done
+# Each entry already carries its flag, so they are appended verbatim.
+(( ${#SETS[@]} )) && HELM_ARGS+=("${SETS[@]}")
 (( ${#EXTRA[@]} )) && HELM_ARGS+=("${EXTRA[@]}")
 
 log "$RELEASE"

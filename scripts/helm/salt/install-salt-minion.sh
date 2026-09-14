@@ -130,8 +130,17 @@ else
     ssh-copy-id -i "$SSH_KEY" -o StrictHostKeyChecking=no "${USER}@${HOST}" \
       || die "ssh-copy-id failed - check the account and password"
     ssh_ok || die "the key was installed but key-based login still fails.
-    On RHEL this is usually SELinux or permissions on ~/.ssh; check
-    'sudo ausearch -m avc -ts recent' on the VM."
+    sshd logs the actual reason. On the VM:
+
+      sudo journalctl -u sshd -n 30 --no-pager
+
+    On RHEL the usual causes are the SELinux label on ~/.ssh, or sshd's
+    StrictModes rejecting a group-writable home. Both are fixed by:
+
+      restorecon -R -v ~/.ssh
+      chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && chmod go-w ~
+
+    Then re-run this script."
     info "key authorized"
   fi
 

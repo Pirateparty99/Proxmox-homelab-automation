@@ -91,10 +91,14 @@ dnf install -y "salt-minion-${SALT_VER}"
 mkdir -p /etc/salt/minion.d
 cat > /etc/salt/minion.d/master.conf <<'MINION'
 master: ${MASTER}
-master_port: ${PUBLISH_PORT}
-# The return port is a separate NodePort, so it has to be named explicitly -
-# the minion would otherwise assume master_port + 1.
-ret_port: ${RET_PORT}
+# Salt's minion-side port names are the opposite way round to what they look
+# like. master_port is the master's RET port - the one authentication and
+# returns go to (4506 in the pod). publish_port is the publish channel (4505).
+# ret_port is a master-side setting and is ignored here entirely, so setting it
+# does nothing: the minion sends its auth to master_port and waits, which shows
+# up as "Attempt to authenticate with the salt master failed with timeout".
+master_port: ${RET_PORT}
+publish_port: ${PUBLISH_PORT}
 ${ID_LINE}
 MINION
 

@@ -61,6 +61,13 @@ if [[ "$MODE" == accept || "$MODE" == status ]]; then
   exit 0
 fi
 
+# Salt defaults the minion id to the host's FQDN, which is what we want unless
+# SALT_MINION_ID says otherwise. Built here rather than in the heredoc below:
+# that heredoc is quoted so the VM writes it verbatim, and a $(hostname -f) in
+# it would land in the config file as literal text rather than a hostname.
+ID_LINE=""
+[[ -n "${SALT_MINION_ID:-}" ]] && ID_LINE="id: ${SALT_MINION_ID}"
+
 # The work done on the VM. Kept as one script so the local and ssh paths cannot
 # drift apart.
 MINION_SETUP=$(cat <<EOF
@@ -88,7 +95,7 @@ master_port: ${PUBLISH_PORT}
 # The return port is a separate NodePort, so it has to be named explicitly -
 # the minion would otherwise assume master_port + 1.
 ret_port: ${RET_PORT}
-id: ${SALT_MINION_ID:-\$(hostname -f)}
+${ID_LINE}
 MINION
 
 # SELinux is enforcing on RHEL by default; salt-minion ships its own policy
@@ -105,7 +112,12 @@ EOF
 if [[ "$MODE" == local ]]; then
   log "Installing salt-minion ${SALT_VER} locally"
   info "master: ${MASTER}:${PUBLISH_PORT}"
-  bash -c "$MINION_SETUP"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    bash -c "$MINION_SETUP"
+  else
+    info "not root - running the install under sudo"
+    printf '%s' "$MINION_SETUP" | sudo bash -s
+  fi
 else
   HOST="${SALT_MINION_HOST:?set SALT_MINION_HOST in config.env, or use --local}"
   USER="${SALT_MINION_SSH_USER:-root}"
@@ -162,9 +174,23 @@ else
     info "key authorized"
   fi
 
+  # Installing packages and writing /etc/salt needs root, and we log in as an
+  # ordinary user. The script is staged first and then run under sudo with a
+  # TTY, so sudo can prompt for the password itself - this script never handles
+  # it. A passwordless sudo rule simply means no prompt appears.
+  REMOTE_TMP="/tmp/salt-minion-setup.$$.sh"
   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
       -o IdentitiesOnly=yes -i "$SSH_ID" \
-      "${USER}@${HOST}" "bash -s" <<< "$MINION_SETUP"
+      "${USER}@${HOST}" "cat > ${REMOTE_TMP} && chmod 700 ${REMOTE_TMP}" <<< "$MINION_SETUP" \
+    || die "could not stage the installer on ${HOST}"
+
+  info "running the install under sudo on ${HOST}"
+  ssh -t -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+      -o IdentitiesOnly=yes -i "$SSH_ID" \
+      "${USER}@${HOST}" "sudo bash ${REMOTE_TMP}; rc=\$?; rm -f ${REMOTE_TMP}; exit \$rc" \
+    || die "the install failed on ${HOST}
+    If sudo refused, add ${USER} to the wheel group on the VM:
+      usermod -aG wheel ${USER}"
 fi
 
 log "Next"

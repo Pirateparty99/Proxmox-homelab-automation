@@ -109,18 +109,30 @@ if [[ "$MODE" == local ]]; then
 else
   HOST="${SALT_MINION_HOST:?set SALT_MINION_HOST in config.env, or use --local}"
   USER="${SALT_MINION_SSH_USER:-root}"
+  SSH_KEY="${SALT_MINION_SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
+  ssh_ok() { ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+                 "${USER}@${HOST}" true 2>/dev/null; }
   log "Installing salt-minion ${SALT_VER} on ${HOST}"
   info "master: ${MASTER}:${PUBLISH_PORT}"
 
-  # Key-based ssh only: this script never handles a password, and a fresh RHEL
-  # install offers password auth alone. Checked up front so the failure names
-  # the fix rather than surfacing as a bare "Permission denied" mid-install.
-  if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
-       "${USER}@${HOST}" true 2>/dev/null; then
-    die "cannot log in to ${USER}@${HOST} with a key.
-    Authorize one - it will ask you for the account password, not this script:
-      ssh-copy-id ${USER}@${HOST}
-    Then re-run. Or run this on the VM itself with --local."
+  # A fresh RHEL install offers password auth only, and the rest of this script
+  # needs key-based ssh. If there is no key yet, install one - ssh-copy-id asks
+  # you for the account password itself. It is never handled here, and never
+  # stored.
+  if ! ssh_ok; then
+    log "Authorizing an SSH key on ${HOST}"
+    command -v ssh-copy-id >/dev/null || die "ssh-copy-id not found in PATH"
+    [[ -f "$SSH_KEY" ]] || die "no public key at ${SSH_KEY}
+    Generate one first:  ssh-keygen -t ed25519
+    Or point SALT_MINION_SSH_KEY at an existing .pub file."
+    info "key: ${SSH_KEY}"
+    info "ssh will prompt you for ${USER}'s password"
+    ssh-copy-id -i "$SSH_KEY" -o StrictHostKeyChecking=no "${USER}@${HOST}" \
+      || die "ssh-copy-id failed - check the account and password"
+    ssh_ok || die "the key was installed but key-based login still fails.
+    On RHEL this is usually SELinux or permissions on ~/.ssh; check
+    'sudo ausearch -m avc -ts recent' on the VM."
+    info "key authorized"
   fi
 
   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no \

@@ -221,11 +221,19 @@ def derive(cfg):
     # which need not be the one the ceph CLI is run on.
     default("PVE_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_API_HOST", "")))
 
-    # Paths in config.env may be relative to the repo root.
+    # Paths in config.env may be relative to the repo root, and may start with
+    # ~. Nothing expands the tilde on the way through: config.env is parsed
+    # here, not sourced by a shell, so "~/.ssh/id_ed25519.pub" would reach the
+    # scripts as a literal directory named "~" and simply not exist.
+    for key in ("AD_CA_CERT_FILE", "SALT_MINION_SSH_KEY"):
+        val = cfg.get(key, "")
+        if not val:
+            continue
+        val = os.path.expanduser(val)
+        if not os.path.isabs(val):
+            val = os.path.join(REPO_ROOT, val)
+        cfg[key] = val
     ca = cfg.get("AD_CA_CERT_FILE", "")
-    if ca and not os.path.isabs(ca):
-        ca = os.path.join(REPO_ROOT, ca)
-    cfg["AD_CA_CERT_FILE"] = ca
 
     # Read the CA in here so the certificate itself never has to live in a
     # template. Absent is not fatal - templates guard on it.

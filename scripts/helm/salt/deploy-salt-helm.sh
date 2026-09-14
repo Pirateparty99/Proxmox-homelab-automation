@@ -66,9 +66,9 @@ if [[ "${SALT_API_ENABLED:-false}" == "true" ]]; then
     DEPLOY_ARGS+=(
       --set "externalAuth.enabled=true"
       --set "externalAuth.existingSecret=${SALT_LDAP_SECRET:-salt-ldap}"
-      --set-json "externalAuth.config={\"ldap\":{\"${SALT_LDAP_ADMINS_GROUP_DN}%\":[\".*\",\"@runner\",\"@wheel\",\"@jobs\"]}}"
+      --set-json "externalAuth.config={\"ldap\":{\"${SALT_LDAP_ADMINS_GROUP}%\":[\".*\",\"@runner\",\"@wheel\",\"@jobs\"]}}"
     )
-    info "LDAP auth: ${SALT_LDAP_ADMINS_GROUP_DN}"
+    info "LDAP auth: group '${SALT_LDAP_ADMINS_GROUP}' (Salt matches the CN, not the DN)"
   else
     info "no ${SALT_LDAP_SECRET:-salt-ldap} Secret - the API will have no way to"
     info "authenticate anyone. Run scripts/helm/salt/configure-salt-ldap.sh first."

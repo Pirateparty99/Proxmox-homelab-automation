@@ -215,6 +215,13 @@ def derive(cfg):
     # from it rather than being spelled out per site.
     default("KAFDROP_FQDN", "kafdrop.%s" % cfg.get("OKD_APPS_DOMAIN", ""))
     default("SALT_FQDN", "salt.%s" % cfg.get("OKD_APPS_DOMAIN", ""))
+    # Salt's LDAP eauth in activedirectory mode resolves a user's groups to
+    # their CN, not their DN, so external_auth has to be keyed on the bare name
+    # - "salt-admins%", not "CN=salt-admins,OU=...%". Keying it on the DN looks
+    # reasonable and fails every login with a bare "Authentication failure".
+    _admins_dn = cfg.get("SALT_LDAP_ADMINS_GROUP_DN", "")
+    default("SALT_LDAP_ADMINS_GROUP",
+            _admins_dn.split(",")[0].split("=")[-1] if _admins_dn else "")
     default("CHART_CACHE", os.path.join(REPO_ROOT, "charts"))
     default("ADCS_CREDENTIALS_SECRET", "%s-credentials" % cfg.get("ADCS_ISSUER_NAME", "adcs"))
     default("CEPH_SSH", "%s@%s" % (cfg.get("CEPH_SSH_USER", "root"), cfg.get("PVE_CEPH_HOST", "")))

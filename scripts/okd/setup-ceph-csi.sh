@@ -43,8 +43,9 @@ NS_CEPHFS="${NS_CEPHFS:-ceph-csi-cephfs}"
 SC_RBD="${SC_RBD:-ceph-rbd}"
 SC_CEPHFS="${SC_CEPHFS:-ceph-fs}"
 SC_RBD_DEFAULT="${SC_RBD_DEFAULT:-true}"    # make ceph-rbd the cluster default SC
-CHART_VERSION_RBD="${CHART_VERSION_RBD:-}"  # empty = latest
-CHART_VERSION_CEPHFS="${CHART_VERSION_CEPHFS:-}"
+# Chart versions are no longer read here: CHART_VERSION_RBD/CHART_VERSION_CEPHFS
+# are consumed by bootstrap.py's HELM_CHARTS, which is what pulls the chart and
+# what helm-deploy.sh resolves against.
 
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
@@ -150,13 +151,22 @@ done
 info "privileged SCC granted in both namespaces"
 
 # ----------------------------------------------------------------- helm charts
-# chart_args resolves each chart to the local cache when scripts/helm/pull-charts.sh
-# has populated it, and to --repo otherwise - so no helm repo is registered here.
-read -ra RBD_CHART <<< "$(chart_args ceph-csi-rbd)"
-read -ra FS_CHART <<< "$(chart_args ceph-csi-cephfs)"
+# helm-deploy.sh owns the chart lookup (cache or upstream) and the version, so
+# neither is repeated here. Passed as an array rather than through run's eval:
+# these --set values contain brackets and escaped dots that a re-parse mangles.
+helm_deploy() {
+  local args=("$REPO_ROOT/scripts/helm/helm-deploy.sh" "$@")
+  if (( DRY_RUN )); then
+    printf '    [dry-run] %s\n' "${args[*]}"
+  else
+    "${args[@]}" >/dev/null
+  fi
+}
 
 log "OKD: ceph-csi-rbd -> StorageClass '${SC_RBD}'"
 RBD_ARGS=(
+  --chart ceph-csi-rbd
+  --release ceph-csi-rbd
   --namespace "$NS_RBD"
   --set "csiConfig[0].clusterID=${FSID}"
   --set "csiConfig[0].monitors[0]=${MON_LIST%%,*}"
@@ -171,12 +181,13 @@ RBD_ARGS=(
   --set "storageClass.allowVolumeExpansion=true"
   --set "provisioner.replicaCount=1"
 )
-[[ -n "$CHART_VERSION_RBD" && "${RBD_CHART[0]}" != *.tgz ]] && RBD_ARGS+=(--version "$CHART_VERSION_RBD")
-run "helm upgrade --install ceph-csi-rbd ${RBD_CHART[*]} ${RBD_ARGS[*]} >/dev/null"
+helm_deploy "${RBD_ARGS[@]}"
 info "deployed"
 
 log "OKD: ceph-csi-cephfs -> StorageClass '${SC_CEPHFS}'"
 FS_ARGS=(
+  --chart ceph-csi-cephfs
+  --release ceph-csi-cephfs
   --namespace "$NS_CEPHFS"
   --set "csiConfig[0].clusterID=${FSID}"
   --set "csiConfig[0].monitors[0]=${MON_LIST%%,*}"
@@ -190,8 +201,7 @@ FS_ARGS=(
   --set "storageClass.allowVolumeExpansion=true"
   --set "provisioner.replicaCount=1"
 )
-[[ -n "$CHART_VERSION_CEPHFS" && "${FS_CHART[0]}" != *.tgz ]] && FS_ARGS+=(--version "$CHART_VERSION_CEPHFS")
-run "helm upgrade --install ceph-csi-cephfs ${FS_CHART[*]} ${FS_ARGS[*]} >/dev/null"
+helm_deploy "${FS_ARGS[@]}"
 info "deployed"
 
 # ---------------------------------------------------------------------- verify

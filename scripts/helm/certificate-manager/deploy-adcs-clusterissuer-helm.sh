@@ -10,24 +10,20 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../../lib/config.sh"
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ISSUER_VERSION="${ISSUER_VERSION:-${ADCS_ISSUER_VERSION:-}}"
 : "${ISSUER_VERSION:?not set - add ADCS_ISSUER_VERSION to config.env}"
 
 render_templates --quiet
-VALUES="$RENDER_DIR/helm/certificate-manager/adcs-issuer-values.yaml"
-
-# chart_args uses the cached chart when there is one, and otherwise passes
-# --repo directly - either way nothing is added to the user's helm repo list.
-read -ra CHART <<< "$(chart_args adcs-issuer)"
 
 # No --set installCRDs=true: that key belongs to cert-manager, not this chart, so
 # helm silently ignored it. CRDs are controlled by crd.install in the values file.
-helm upgrade --install adcs-issuer "${CHART[@]}" \
+#
+# --wait matters here specifically: helm reports "deployed" as soon as the
+# Deployment applies, but this chart has historically been rejected later by the
+# SCC, which only shows up on the ReplicaSet.
+"$REPO_ROOT/scripts/helm/helm-deploy.sh" \
+  --chart adcs-issuer \
+  --release adcs-issuer \
   --namespace "$ADCS_NAMESPACE" \
-  --create-namespace \
-  --values "$VALUES"
-
-# helm reports "deployed" as soon as the Deployment applies. SCC rejections happen
-# later, on the ReplicaSet, so check the rollout actually finished.
-oc rollout status deployment/adcs-issuer-controller-manager -n "$ADCS_NAMESPACE" --timeout=180s
+  --values "$RENDER_DIR/helm/certificate-manager/adcs-issuer-values.yaml" \
+  --wait --timeout 180s

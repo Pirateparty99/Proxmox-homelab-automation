@@ -8,16 +8,15 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 render_templates --quiet
-VALUES="$RENDER_DIR/helm/certificate-manager/cert-man-values.yaml"
 
 echo "Installing Cert Manager version $CERT_MANAGER_VERSION with Helm:"
-# Local cache when populated, upstream otherwise - see chart_args in lib/config.sh.
-read -ra CHART <<< "$(chart_args cert-manager)"
-helm upgrade --install cert-manager "${CHART[@]}" \
+"$REPO_ROOT/scripts/helm/helm-deploy.sh" \
+  --chart cert-manager \
+  --release cert-manager \
   --namespace cert-manager \
-  --create-namespace \
+  --values "$RENDER_DIR/helm/certificate-manager/cert-man-values.yaml" \
   --set installCRDs=true \
-  --values "$VALUES" 
+  --wait
 
 echo "Installing ADCS Issuer version $ADCS_ISSUER_VERSION for Cert Manager:"
 ISSUER_VERSION="$ADCS_ISSUER_VERSION" "$SCRIPT_DIR/deploy-adcs-clusterissuer-helm.sh"

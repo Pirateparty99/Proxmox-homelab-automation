@@ -68,6 +68,13 @@ render_templates() {
 # has moved on to. Populate the cache with scripts/helm/pull-charts.sh.
 chart_args() {
     local chart="$1" cached row source version
+    # A chart developed in this repo, or in a sibling checkout, is given as a
+    # path rather than a name - helm accepts a directory or a .tgz directly, and
+    # there is nothing to cache or look up.
+    if [[ -d "$chart" || "$chart" == *.tgz && -f "$chart" ]]; then
+        printf '%s\n' "$chart"
+        return 0
+    fi
     cached=$(ls -t "${CHART_CACHE}/${chart}"-*.tgz 2>/dev/null | head -1)
     if [[ -n "$cached" ]]; then
         printf '%s\n' "$cached"
